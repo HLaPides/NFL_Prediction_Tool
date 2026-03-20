@@ -1,0 +1,5 @@
+nflreadpy@git+https://github.com/nflverse/nflreadpy
+polars
+pyarrow
+pandas
+requests
