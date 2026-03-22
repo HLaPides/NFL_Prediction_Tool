@@ -1,8 +1,12 @@
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
 import sqlite3
 import pandas as pd
 import time
 from pathlib import Path
-from getter import get_all_historical, get_current_roster, get_current_weekly_stats
+from data.getter import get_all_historical, get_current_roster, get_current_weekly_stats
 
 DB_PATH = Path(__file__).resolve().parent / "jaginator.db"
 
@@ -98,6 +102,27 @@ def load_game_personnel(min_season: int = 1999) -> pd.DataFrame:
 def load_team_games(team: str) -> pd.DataFrame:
     with get_connection() as conn:
         return pd.read_sql(f"""SELECT * FROM schedules WHERE home_team = ? OR away_team = ? ORDER BY season, week""", conn, params={team,team})
+
+def load_elo_history() -> pd.DataFrame:
+    with get_connection() as conn:
+        return pd.read_sql("SELECT * FROM elo_history ORDER BY season, week", conn)
+    
+def load_current_elo_ratings() -> dict[str, float]:
+    """
+    Returns the most recent ELO rating per team as a dict {team: elo}.
+    Used to seed predictions without replaying all history.
+    """
+    with get_connection() as conn:
+        df = pd.read_sql("""
+            SELECT team, elo_after
+            FROM elo_history
+            WHERE (team, season, week) IN (
+                SELECT team, MAX(season), MAX(week)
+                FROM elo_history
+                GROUP BY team
+            )
+        """, conn)
+    return dict(zip(df["team"], df["elo_after"]))
 
 
 #Utility functions. List_tables() lists the 5 tables the db has, table_info prints all the columns of those tables
