@@ -108,21 +108,19 @@ def load_elo_history() -> pd.DataFrame:
         return pd.read_sql("SELECT * FROM elo_history ORDER BY season, week", conn)
     
 def load_current_elo_ratings() -> dict[str, float]:
-    """
-    Returns the most recent ELO rating per team as a dict {team: elo}.
-    Used to seed predictions without replaying all history.
-    """
-    with get_connection() as conn:
+   with get_connection() as conn:
         df = pd.read_sql("""
-            SELECT team, elo_after
-            FROM elo_history
-            WHERE (team, season, week) IN (
-                SELECT team, MAX(season), MAX(week)
+            SELECT h.team, h.elo_after
+            FROM elo_history h
+            INNER JOIN (
+                SELECT team, MAX(season * 100 + week) AS max_key
                 FROM elo_history
                 GROUP BY team
-            )
+            ) latest
+            ON h.team = latest.team
+            AND (h.season * 100 + h.week) = latest.max_key
         """, conn)
-    return dict(zip(df["team"], df["elo_after"]))
+        return dict(zip(df["team"], df["elo_after"]))
 
 
 #Utility functions. List_tables() lists the 5 tables the db has, table_info prints all the columns of those tables

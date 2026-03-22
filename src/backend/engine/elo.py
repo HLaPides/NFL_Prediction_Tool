@@ -151,9 +151,6 @@ def predict_game(
     elo_diff = adjusted_home - rating_away
     implied_spread = elo_diff / 25.0
 
-    print(f"adjusted_home: {adjusted_home}, away: {rating_away}, diff: {adjusted_home - rating_away}")
-    print(f"prob_home raw: {1.0 / (1 + math.pow(10, (rating_away - adjusted_home) / 400))}")
-
     return {
         "home_team":      home_team,
         "away_team":      away_team,
