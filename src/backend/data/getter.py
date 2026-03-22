@@ -26,6 +26,7 @@ def get_current_roster(Timestamp) -> pd.DataFrame:
     return nfl.load_rosters([current_season]).to_pandas()
 
 
+#Prints all the historical data
 def get_all_historical() -> dict [str, pd.DataFrame]:
     print(f"Loading {len(HISTORICAL_SEASONS)} seasons of NFL data...")
     print("[1/2] Schedules and Game Results....")
@@ -40,12 +41,3 @@ def get_all_historical() -> dict [str, pd.DataFrame]:
         "team_stats" : team_stats
     }
 
-
-
-"""
-if __name__ == "__main__":
-    data = get_all_historical()
-    for name, df in data.items():
-        print(f"\n{name}: {df.shape}")
-        print(df.head(800))
-"""

@@ -28,14 +28,19 @@ PERSONNEL_COLS = [
 ]
 
 
+#Gets connection to sql database
+
 def get_connection() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     return sqlite3.connect(DB_PATH)
+
+#Save functions saves the pd.Dataframe passed in to the header into jaginator.db
 
 def save(df: pd.DataFrame, table: str, if_exists: str = "replace") -> None:
     with get_connection() as conn:
         df.to_sql(table, conn, if_exists=if_exists, index=False)
 
+#This seeds the database. Only run if something happens to the db
 def seed_database() -> None:
     print(f"Seeding jaginator.db at {DB_PATH}")
     data = get_all_historical()
@@ -49,11 +54,13 @@ def seed_database() -> None:
 
     print("Database seeded.")
 
+#Updates weekly roster info and weekly stats
 def refresh_week() -> None:
     with get_connection() as conn:
         save(get_current_roster(time.time), "rosters", if_exists="replace")
         save(get_current_weekly_stats(time.time), "weekly_stats", if_exists="replace")
 
+#Load functions. They all load their respective tables. IE load_team_stats the team_stats table
 
 def load_schedules(min_season: int = 1999) -> pd.DataFrame:
     with get_connection() as conn:
@@ -92,6 +99,9 @@ def load_team_games(team: str) -> pd.DataFrame:
     with get_connection() as conn:
         return pd.read_sql(f"""SELECT * FROM schedules WHERE home_team = ? OR away_team = ? ORDER BY season, week""", conn, params={team,team})
 
+
+#Utility functions. List_tables() lists the 5 tables the db has, table_info prints all the columns of those tables
+
 def list_tables() -> list[str]:
     with get_connection() as conn:
         rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
@@ -104,13 +114,3 @@ def table_info(table: str) -> None:
         print(f"\n{table} - {len(cols)} columns:")
         for col in cols:
             print(f"{col[1]:30s} {col[2]}")
-
-if __name__ == "__main__":
-    seed_database()
-
-    print("\nTables in DB:", list_tables())
-    print(f"Schedules since 2020:       {len(load_schedules(2020))} games")
-    print(f"Team stats since 2020:      {len(load_team_stats(2020))} rows")
-    print(f"Game odds since 2020:       {len(load_game_odds(2020))} rows")
-    print(f"Game conditions since 2020: {len(load_game_conditions(2020))} rows")
-    print(f"Game personnel since 2020:  {len(load_game_personnel(2020))} rows")
