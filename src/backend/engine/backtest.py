@@ -4,6 +4,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import pandas as pd
+import nflreadpy as nfl
 from data.sql_helpers import load_schedules, load_game_odds, load_elo_history
 from engine.elo import predict_game
 
@@ -91,13 +92,19 @@ def print_accuracy_report(df: pd.DataFrame, season: int) -> None:
     print(f"Avg Vegas spread:      {df['vegas_spread'].abs().mean():.1f} pts")
     print(f"Avg spread diff:       {df['spread_diff'].abs().mean():.1f} pts")
 
+    if (elo_correct>vegas_correct):
+        print(f"\nJaginator beat Vegas for the season")
     print(f"\nBiggest ELO vs Vegas disagreements:")
     disagreements = df.reindex(df["spread_diff"].abs().sort_values(ascending=False).index)
     print(disagreements[["week", "home_team", "away_team", "elo_spread", "vegas_spread", "actual_result"]].head(10).to_string(index=False))
 
 
 if __name__ == "__main__":
-    for season in range(1999,2025):
+    for season in range(1999,2026):
         print(f"Running backtest for {season} season...")
         df = build_season_predictions(season)
         print_accuracy_report(df, season)
+
+df = nfl.load_schedules([2025]).to_pandas()
+print(df[["game_id", "week", "home_team", "away_team", "spread_line"]].head(20).to_string())
+print(f"\nGames with spread data: {df['spread_line'].notna().sum()} / {len(df)}")

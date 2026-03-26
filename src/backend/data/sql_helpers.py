@@ -121,6 +121,14 @@ def load_current_elo_ratings() -> dict[str, float]:
             AND (h.season * 100 + h.week) = latest.max_key
         """, conn)
         return dict(zip(df["team"], df["elo_after"]))
+   
+def load_depth_charts(starters_only: bool = True) -> pd.DataFrame:
+    with get_connection() as conn:
+        query = "SELECT * FROM depth_charts_current"
+        if starters_only:
+            query += " WHERE depth_order = 1"
+        query += " ORDER BY team, position, depth_order"
+        return pd.read_sql(query, conn)
 
 
 #Utility functions. List_tables() lists the 5 tables the db has, table_info prints all the columns of those tables
