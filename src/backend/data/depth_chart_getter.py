@@ -16,7 +16,7 @@ TEAM_ID_MAP = {
     "LA":  14, "LAC": 24, "LV":  13, "MIA": 15,
     "MIN": 16, "NE":  17, "NO":  18, "NYG": 19,
     "NYJ": 20, "PHI": 21, "PIT": 23, "SEA": 26,
-    "SF":  25, "TB":  27, "TEN": 10, "WAS": 28,
+    "SF":  25, "TB":  27, "TEN": 10, "WSH": 28
 }
 
 SKILL_POSITIONS = {"QB", "RB", "WR", "TE"}
@@ -89,7 +89,6 @@ def get_week_starters(home_team: str, away_team: str) -> dict[str, pd.DataFrame]
 
 if __name__ == "__main__":
     df = get_all_depth_charts()
-print(f"\nTotal entries: {len(df)}")
-print(f"\nStarters only:")
-starters = df[df["depth_order"] == 1]
-print(starters.groupby("position")["team"].count())
+    print(f"\nStarters only:")
+    starters = df[df["depth_order"] == 1]
+    print(starters.groupby("position")["team"].count())

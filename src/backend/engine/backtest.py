@@ -104,7 +104,3 @@ if __name__ == "__main__":
         print(f"Running backtest for {season} season...")
         df = build_season_predictions(season)
         print_accuracy_report(df, season)
-
-df = nfl.load_schedules([2025]).to_pandas()
-print(df[["game_id", "week", "home_team", "away_team", "spread_line"]].head(20).to_string())
-print(f"\nGames with spread data: {df['spread_line'].notna().sum()} / {len(df)}")

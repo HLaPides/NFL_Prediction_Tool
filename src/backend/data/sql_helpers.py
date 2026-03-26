@@ -44,6 +44,26 @@ def save(df: pd.DataFrame, table: str, if_exists: str = "replace") -> None:
     with get_connection() as conn:
         df.to_sql(table, conn, if_exists=if_exists, index=False)
 
+def merge_season_into_historical(schedules_current: pd.DataFrame) -> int:
+    completed = schedules_current.dropna(subset=["home_score", "away_score"])
+
+    with get_connection() as conn:
+        existing = pd.read_sql("SELECT game_id FROM schedules", conn)["game_id"].tolist()
+        new      = completed[~completed["game_id"].isin(existing)]
+
+        if new.empty:
+            return 0
+
+        def safe_slice(df, cols):
+            return df[[c for c in cols if c in df.columns]]
+
+        new.pipe(safe_slice, SCHEDULE_COLS).to_sql("schedules",         conn, if_exists="append", index=False)
+        new.pipe(safe_slice, ODDS_COLS).to_sql("game_odds",             conn, if_exists="append", index=False)
+        new.pipe(safe_slice, CONDITIONS_COLS).to_sql("game_conditions", conn, if_exists="append", index=False)
+        new.pipe(safe_slice, PERSONNEL_COLS).to_sql("game_personnel",   conn, if_exists="append", index=False)
+
+    return len(new)
+
 #This seeds the database. Only run if something happens to the db
 def seed_database() -> None:
     print(f"Seeding jaginator.db at {DB_PATH}")
@@ -129,6 +149,24 @@ def load_depth_charts(starters_only: bool = True) -> pd.DataFrame:
             query += " WHERE depth_order = 1"
         query += " ORDER BY team, position, depth_order"
         return pd.read_sql(query, conn)
+    
+def load_upcoming_games(schedules_current: pd.DataFrame) -> pd.DataFrame:
+    upcoming  = schedules_current[schedules_current["home_score"].isna()]
+    if upcoming.empty:
+        return upcoming
+    next_week = upcoming["week"].min()
+    return upcoming[upcoming["week"] == next_week].reset_index(drop=True)
+    
+def refresh_current_season() -> None:
+    """
+    Updates weekly stats and rosters for the current season.
+    Run once per week during the season.
+    """
+    print("Refreshing current season data...")
+    save(get_current_weekly_stats(), "weekly_stats", if_exists="replace")
+    save(get_current_rosters(),      "rosters",      if_exists="replace")
+    print("Current season data refreshed.")
+
 
 
 #Utility functions. List_tables() lists the 5 tables the db has, table_info prints all the columns of those tables
