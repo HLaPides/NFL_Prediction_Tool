@@ -14,24 +14,24 @@ from data.sql_helpers import (
 from data.depth_chart_getter import get_all_depth_charts
 from engine.elo import build_elo_history
 
-SKILL_POSITIONS = {"QB", "RB", "WR", "TE"}
+SKILL_POSITIONS = {"QB", "RB", "WR", "TE", "K"}
 
 
 
-def fetch_schedules(season: int) -> pd.DataFrame:
+def get_schedules(season: int) -> pd.DataFrame:
     return nfl.load_schedules([season]).to_pandas()
 
-def fetch_player_stats(season: int) -> pd.DataFrame:
+def get_player_stats(season: int) -> pd.DataFrame:
     df = nfl.load_player_stats([season]).to_pandas()
     return df[df["position"].isin(SKILL_POSITIONS)]
 
-def fetch_team_stats(season: int) -> pd.DataFrame:
+def get_team_stats(season: int) -> pd.DataFrame:
     return nfl.load_team_stats(seasons=[season], summary_level="week").to_pandas()
 
-def fetch_rosters(season: int) -> pd.DataFrame:
+def get_rosters(season: int) -> pd.DataFrame:
     return nfl.load_rosters([season]).to_pandas()
 
-def fetch_depth_charts() -> pd.DataFrame:
+def get_depth_charts() -> pd.DataFrame:
     df = get_all_depth_charts()
     if not df.empty:
         df["fetched_at"] = pd.Timestamp.now().isoformat()
@@ -47,15 +47,15 @@ def run_weekly_update() -> pd.DataFrame:
     print("=" * 40)
 
     print("\n[1/5] Fetching nflverse data...")
-    schedules    = fetch_schedules(season)
-    player_stats = fetch_player_stats(season)
-    team_stats   = fetch_team_stats(season)
-    rosters      = fetch_rosters(season)
+    schedules    = get_schedules(season)
+    player_stats = get_player_stats(season)
+    team_stats   = get_team_stats(season)
+    rosters      = get_rosters(season)
     print(f"  {len(schedules)} games, {len(player_stats)} player rows, "
           f"{len(team_stats)} team rows, {len(rosters)} roster entries")
 
     print("\n[2/5] Fetching ESPN depth charts...")
-    depth_charts = fetch_depth_charts()
+    depth_charts = get_depth_charts()
     print(f"  {len(depth_charts)} entries ({depth_charts['team'].nunique()} teams)")
 
     print("\n[3/5] Saving to current tables...")

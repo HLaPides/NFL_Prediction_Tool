@@ -1,20 +1,15 @@
-
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import pandas as pd
-import nflreadpy as nfl
 from data.sql_helpers import load_schedules, load_game_odds, load_elo_history
 from engine.elo import predict_game
+from engine.condition_analyzer import ConditionAnalyzer
+from engine.main_engine import DOME_ADJ, COLD_ADJ, HIGH_WIND_ADJ, SEVERE_WIND_ADJ, TURF_ADJ
 
-#Backtest curtosey of Claude
+
 def build_season_predictions(season: int) -> pd.DataFrame:
-    """
-    For every regular season game in a given season, look up each team's
-    ELO rating going into that game (elo_before) and generate a prediction.
-    Merges with actual results and Vegas lines for comparison.
-    """
     sched = load_schedules(min_season=season)
     sched = sched[(sched["season"] == season) & (sched["game_type"] == "REG")]
 
@@ -24,7 +19,6 @@ def build_season_predictions(season: int) -> pd.DataFrame:
     history = load_elo_history()
     history = history[history["season"] == season]
 
-    # Get each team's ELO going INTO each game (elo_before)
     home_elo = history[["game_id", "team", "elo_before"]].rename(
         columns={"team": "home_team", "elo_before": "home_elo_before"}
     )
@@ -36,7 +30,9 @@ def build_season_predictions(season: int) -> pd.DataFrame:
     df = df.merge(home_elo, on=["game_id", "home_team"], how="left")
     df = df.merge(away_elo, on=["game_id", "away_team"], how="left")
 
+    conditions = ConditionAnalyzer()
     rows = []
+
     for _, game in df.iterrows():
         home_elo_val = game["home_elo_before"]
         away_elo_val = game["away_elo_before"]
@@ -45,18 +41,31 @@ def build_season_predictions(season: int) -> pd.DataFrame:
             continue
 
         ratings = {game["home_team"]: home_elo_val, game["away_team"]: away_elo_val}
-        pred = predict_game(game["home_team"], game["away_team"], ratings)
+        pred    = predict_game(game["home_team"], game["away_team"], ratings)
 
-        actual_result   = game["result"]           # positive = home win
-        vegas_spread    = game["spread_line"]      # negative = home favored
-        elo_spread      = pred["implied_spread"]   # positive = home favored
+        #condition adjustments
+        cond = conditions.analyze_game(game["game_id"])
+        adj  = 0.0
+        if cond["is_dome"]:
+            adj += DOME_ADJ
+        if cond["is_cold"]:
+            adj += COLD_ADJ
+        if cond["severe_wind"]:
+            adj += SEVERE_WIND_ADJ
+        elif cond["high_wind"]:
+            adj += HIGH_WIND_ADJ
+        if cond["is_turf"]:
+            adj += TURF_ADJ
 
-        actual_winner   = game["home_team"] if actual_result > 0 else game["away_team"]
-        predicted_winner = game["home_team"] if pred["prob_home"] > 0.5 else game["away_team"]
-        vegas_winner = game["home_team"] if vegas_spread > 0 else game["away_team"]
+        adjusted_prob    = max(0.01, min(0.99, pred["prob_home"] + adj))
+        actual_result    = game["result"]
+        vegas_spread     = game["spread_line"]
+        elo_spread       = pred["implied_spread"]
 
-        # Did the home team cover the Vegas spread?
-        elo_covers_spread = (actual_result + vegas_spread) > 0
+        actual_winner    = game["home_team"] if actual_result > 0 else game["away_team"]
+        elo_winner       = game["home_team"] if pred["prob_home"] > 0.5 else game["away_team"]
+        adj_winner       = game["home_team"] if adjusted_prob > 0.5 else game["away_team"]
+        vegas_winner     = game["home_team"] if vegas_spread > 0 else game["away_team"]
 
         rows.append({
             "week":             game["week"],
@@ -65,11 +74,13 @@ def build_season_predictions(season: int) -> pd.DataFrame:
             "actual_result":    actual_result,
             "vegas_spread":     vegas_spread,
             "elo_spread":       round(elo_spread, 1),
-            "spread_diff": round(elo_spread - vegas_spread, 1),  # positive = ELO thinks home is stronger than Vegas
+            "spread_diff":      round(elo_spread - vegas_spread, 1),
             "actual_winner":    actual_winner,
-            "predicted_winner": predicted_winner,
+            "predicted_winner": adj_winner,
+            "elo_winner":       elo_winner,
             "vegas_winner":     vegas_winner,
-            "elo_correct":      predicted_winner == actual_winner,
+            "elo_correct":      elo_winner == actual_winner,
+            "adj_correct":      adj_winner == actual_winner,
             "vegas_correct":    vegas_winner == actual_winner,
         })
 
@@ -79,6 +90,7 @@ def build_season_predictions(season: int) -> pd.DataFrame:
 def print_accuracy_report(df: pd.DataFrame, season: int) -> None:
     total         = len(df)
     elo_correct   = df["elo_correct"].sum()
+    adj_correct   = df["adj_correct"].sum()
     vegas_correct = df["vegas_correct"].sum()
 
     print(f"\n{'='*50}")
@@ -86,21 +98,26 @@ def print_accuracy_report(df: pd.DataFrame, season: int) -> None:
     print(f"{'='*50}")
     print(f"Games evaluated:       {total}")
     print(f"ELO correct:           {elo_correct}/{total} ({elo_correct/total*100:.1f}%)")
+    print(f"ELO + conditions:      {adj_correct}/{total} ({adj_correct/total*100:.1f}%)")
     print(f"Vegas correct:         {vegas_correct}/{total} ({vegas_correct/total*100:.1f}%)")
-    print(f"ELO vs Vegas edge:     {(elo_correct - vegas_correct)/total*100:+.1f}%")
+    print(f"Adj vs Vegas edge:     {(adj_correct - vegas_correct)/total*100:+.1f}%")
     print(f"\nAvg ELO spread:        {df['elo_spread'].abs().mean():.1f} pts")
     print(f"Avg Vegas spread:      {df['vegas_spread'].abs().mean():.1f} pts")
     print(f"Avg spread diff:       {df['spread_diff'].abs().mean():.1f} pts")
 
-    if (elo_correct>vegas_correct):
+    if adj_correct > vegas_correct:
         print(f"\nJaginator beat Vegas for the season")
+
     print(f"\nBiggest ELO vs Vegas disagreements:")
     disagreements = df.reindex(df["spread_diff"].abs().sort_values(ascending=False).index)
-    print(disagreements[["week", "home_team", "away_team", "elo_spread", "vegas_spread", "actual_result"]].head(10).to_string(index=False))
+    print(disagreements[[
+        "week", "home_team", "away_team",
+        "elo_spread", "vegas_spread", "actual_result"
+    ]].head(10).to_string(index=False))
 
 
 if __name__ == "__main__":
-    for season in range(1999,2026):
+    for season in range(1999, 2026):
         print(f"Running backtest for {season} season...")
         df = build_season_predictions(season)
         print_accuracy_report(df, season)
