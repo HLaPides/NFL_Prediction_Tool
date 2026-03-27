@@ -12,7 +12,7 @@ from data.sql_helpers import (
     load_upcoming_games
 )
 from data.depth_chart_getter import get_all_depth_charts
-from engine.elo import build_elo_history
+from backend.engine.elo_analyzer import build_elo_history
 
 SKILL_POSITIONS = {"QB", "RB", "WR", "TE", "K"}
 

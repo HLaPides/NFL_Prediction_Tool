@@ -4,7 +4,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from data.sql_helpers import load_current_elo_ratings, get_connection
-from engine.elo import predict_game
+from backend.engine.elo_analyzer import predict_game
 from condition_analyzer import ConditionAnalyzer
 
 import pandas as pd

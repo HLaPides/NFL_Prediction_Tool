@@ -4,7 +4,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import pandas as pd
 from data.sql_helpers import load_schedules, load_game_odds, load_elo_history
-from engine.elo import predict_game
+from backend.engine.elo_analyzer import predict_game
 from engine.condition_analyzer import ConditionAnalyzer
 from engine.main_engine import DOME_ADJ, COLD_ADJ, HIGH_WIND_ADJ, SEVERE_WIND_ADJ, TURF_ADJ
 
