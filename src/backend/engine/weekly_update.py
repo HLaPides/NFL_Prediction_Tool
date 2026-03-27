@@ -14,7 +14,7 @@ from data.sql_helpers import (
 from data.depth_chart_getter import get_all_depth_charts
 from backend.engine.elo_analyzer import build_elo_history
 
-SKILL_POSITIONS = {"QB", "RB", "WR", "TE", "K"}
+SKILL_POSITIONS = {"QB", "RB", "WR", "TE"}
 
 
 

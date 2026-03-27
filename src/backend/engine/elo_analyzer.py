@@ -135,15 +135,3 @@ class elo_analyzer:
             "prob_away":      round(1.0 - prob_home, 3),
             "implied_spread": round(elo_diff / 25.0, 1),
         }
-
-
-
-#Backwards compatability functions that the other methods use
-_engine = elo_analyzer()
-
-def build_elo_history(schedules: pd.DataFrame = None) -> tuple[dict, pd.DataFrame]:
-    return _engine.build_history(schedules)
-
-def predict_game(home_team: str, away_team: str, ratings: dict[str, float]) -> dict:
-    _engine.ratings = ratings
-    return _engine.predict(home_team, away_team)

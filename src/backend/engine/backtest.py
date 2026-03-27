@@ -1,15 +1,16 @@
+
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import pandas as pd
 from data.sql_helpers import load_schedules, load_game_odds, load_elo_history
-from backend.engine.elo_analyzer import predict_game
+from engine.elo_analyzer import elo_analyzer
 from engine.condition_analyzer import ConditionAnalyzer
 from engine.main_engine import DOME_ADJ, COLD_ADJ, HIGH_WIND_ADJ, SEVERE_WIND_ADJ, TURF_ADJ
 
 
-def build_season_predictions(season: int) -> pd.DataFrame:
+def build_season_predictions(season: int, engine: elo_analyzer, conditions: ConditionAnalyzer) -> pd.DataFrame:
     sched = load_schedules(min_season=season)
     sched = sched[(sched["season"] == season) & (sched["game_type"] == "REG")]
 
@@ -26,11 +27,9 @@ def build_season_predictions(season: int) -> pd.DataFrame:
         columns={"team": "away_team", "elo_before": "away_elo_before"}
     )
 
-    df = sched.merge(odds, on="game_id", how="left")
-    df = df.merge(home_elo, on=["game_id", "home_team"], how="left")
-    df = df.merge(away_elo, on=["game_id", "away_team"], how="left")
-
-    conditions = ConditionAnalyzer()
+    df  = sched.merge(odds, on="game_id", how="left")
+    df  = df.merge(home_elo, on=["game_id", "home_team"], how="left")
+    df  = df.merge(away_elo, on=["game_id", "away_team"], how="left")
     rows = []
 
     for _, game in df.iterrows():
@@ -40,32 +39,26 @@ def build_season_predictions(season: int) -> pd.DataFrame:
         if pd.isna(home_elo_val) or pd.isna(away_elo_val):
             continue
 
-        ratings = {game["home_team"]: home_elo_val, game["away_team"]: away_elo_val}
-        pred    = predict_game(game["home_team"], game["away_team"], ratings)
+        engine.ratings = {game["home_team"]: home_elo_val, game["away_team"]: away_elo_val}
+        pred           = engine.predict(game["home_team"], game["away_team"])
 
-        #condition adjustments
         cond = conditions.analyze_game(game["game_id"])
         adj  = 0.0
-        if cond["is_dome"]:
-            adj += DOME_ADJ
-        if cond["is_cold"]:
-            adj += COLD_ADJ
-        if cond["severe_wind"]:
-            adj += SEVERE_WIND_ADJ
-        elif cond["high_wind"]:
-            adj += HIGH_WIND_ADJ
-        if cond["is_turf"]:
-            adj += TURF_ADJ
+        if cond["is_dome"]:     adj += DOME_ADJ
+        if cond["is_cold"]:     adj += COLD_ADJ
+        if cond["severe_wind"]: adj += SEVERE_WIND_ADJ
+        elif cond["high_wind"]: adj += HIGH_WIND_ADJ
+        if cond["is_turf"]:     adj += TURF_ADJ
 
-        adjusted_prob    = max(0.01, min(0.99, pred["prob_home"] + adj))
-        actual_result    = game["result"]
-        vegas_spread     = game["spread_line"]
-        elo_spread       = pred["implied_spread"]
+        adjusted_prob = max(0.01, min(0.99, pred["prob_home"] + adj))
+        actual_result = game["result"]
+        vegas_spread  = game["spread_line"]
+        elo_spread    = pred["implied_spread"]
 
-        actual_winner    = game["home_team"] if actual_result > 0 else game["away_team"]
-        elo_winner       = game["home_team"] if pred["prob_home"] > 0.5 else game["away_team"]
-        adj_winner       = game["home_team"] if adjusted_prob > 0.5 else game["away_team"]
-        vegas_winner     = game["home_team"] if vegas_spread > 0 else game["away_team"]
+        actual_winner = game["home_team"] if actual_result > 0 else game["away_team"]
+        elo_winner    = game["home_team"] if pred["prob_home"] > 0.5 else game["away_team"]
+        adj_winner    = game["home_team"] if adjusted_prob > 0.5 else game["away_team"]
+        vegas_winner  = game["home_team"] if vegas_spread > 0 else game["away_team"]
 
         rows.append({
             "week":             game["week"],
@@ -117,7 +110,9 @@ def print_accuracy_report(df: pd.DataFrame, season: int) -> None:
 
 
 if __name__ == "__main__":
+    engine = elo_analyzer()
+    conditions = ConditionAnalyzer()
     for season in range(1999, 2026):
         print(f"Running backtest for {season} season...")
-        df = build_season_predictions(season)
+        df = build_season_predictions(season, engine, conditions)
         print_accuracy_report(df, season)
