@@ -13,7 +13,7 @@ RELOCATIONS = {
 }
 
 
-class EloEngine:
+class elo_analyzer:
     def __init__(
         self,
         initial_elo:      float = 1500,
@@ -137,11 +137,9 @@ class EloEngine:
         }
 
 
-# ── Backwards compatibility ───────────────────────────────────────────────────
-# These module-level functions allow existing code (backtest.py, etc.)
-# to keep working without changes.
 
-_engine = EloEngine()
+#Backwards compatability functions that the other methods use
+_engine = elo_analyzer()
 
 def build_elo_history(schedules: pd.DataFrame = None) -> tuple[dict, pd.DataFrame]:
     return _engine.build_history(schedules)
