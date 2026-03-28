@@ -6,10 +6,11 @@ import numpy as np
 import pandas as pd
 from data.sql_helpers import get_connection
 
-MIN_ATTEMPTS = 10 # Needs 10 attempts for a game to count
-LEAGUE_AVG_EPA = .07 # Fallback for rookies (IE Fernado Mendoza)
+MIN_ATTEMPTS   = 10
+LEAGUE_AVG_EPA = 0.07
 ROLLING_WEIGHT = [0.4, 0.3, 0.2, 0.1]
-CAREER_BLEND = {0: 1.0, 1: 0.7, 2: 0.5, 3: 0.3}
+CAREER_BLEND   = {0: 1.0, 1: 0.7, 2: 0.5, 3: 0.3}
+
 
 def _load_qb_stats(table: str) -> pd.DataFrame:
     with get_connection() as conn:
@@ -24,10 +25,12 @@ def _load_qb_stats(table: str) -> pd.DataFrame:
     df["epa_per_att"] = (df["passing_epa"] + df["rushing_epa"]) / df["attempts"]
     return df
 
+
 def _weighted_avg(values: np.ndarray) -> float:
     last4 = values[::-1][:4]
-    w = np.array(ROLLING_WEIGHT[:len(last4)])
+    w     = np.array(ROLLING_WEIGHT[:len(last4)])
     return float(np.dot(last4, w / w.sum()))
+
 
 def _career_avg(player_id: str, historical: pd.DataFrame, before_season: int = None) -> float | None:
     games = historical[historical["player_id"] == player_id]
@@ -39,36 +42,21 @@ def _career_avg(player_id: str, historical: pd.DataFrame, before_season: int = N
     w     = np.arange(1, len(games) + 1, dtype=float)
     return float(np.dot(games["epa_per_att"].values, w / w.sum()))
 
+
 class qb_evaluator:
-    """
-    Evaluates QB quality as a weighted EPA/attempt metric.
-
-    Blending logic:
-        Rookie, 0 games  → league average
-        Rookie, 1+ games → pure rolling average of current data
-        Veteran, 0 games → career average
-        Veteran, 1 game  → 70% career + 30% current
-        Veteran, 2 games → 50% career + 50% current
-        Veteran, 3 games → 30% career + 70% current
-        4+ games         → pure rolling average
-    """
-
+    #Evaluates QB quality as a weighted EPA/attempt metric.
     def __init__(self):
         self.historical = _load_qb_stats("player_stats")
         self.current    = _load_qb_stats("player_stats_current")
 
     def evaluate(self, player_id: str, up_to_week: int, season: int) -> dict:
-        print(f"  evaluate called: pid={player_id}, week={up_to_week}, season={season}")
-        career = _career_avg(player_id, self.historical, before_season=season)
-        print(f"  career={career}")
-        curr = self.current[
+        curr   = self.current[
             (self.current["player_id"] == player_id) &
             (self.current["season"]    == season) &
             (self.current["week"]      <  up_to_week)
         ].sort_values("week")
 
-
-        career = _career_avg(player_id, self.historical)
+        career = _career_avg(player_id, self.historical, before_season=season)
         n      = len(curr)
 
         if n >= 4:
@@ -92,14 +80,13 @@ class qb_evaluator:
             (self.current["week"]   <  up_to_week)
         ]
 
-        if curr.empty:
-            return self._result(None, LEAGUE_AVG_EPA, "no_data", 0, player_name="Unknown")
+        if not curr.empty:
+            pid, name = curr.groupby(["player_id", "player_name"])["attempts"].sum().idxmax()
+            result    = self.evaluate(pid, up_to_week, season)
+            result["player_name"] = name
+            return result
 
-        pid, name = curr.groupby(["player_id", "player_name"])["attempts"].sum().idxmax()
-        result    = self.evaluate(pid, up_to_week, season)
-        result["player_name"] = name
-
-        #Historical data
+        # No current season data — fall back to last season's starter
         hist = self.historical[self.historical["team"] == team]
         if hist.empty:
             return self._result(None, LEAGUE_AVG_EPA, "no_data", 0, player_name="Unknown")
@@ -122,20 +109,21 @@ class qb_evaluator:
         if player_name is not None:
             r["player_name"] = player_name
         return r
-    
+
+
 if __name__ == "__main__":
     ev = qb_evaluator()
 
-    print("QB ratings going into week 10 of 2025:\n")
-    for team in ["KC", "PHI", "BUF", "NE", "CHI", "DEN", "SEA"]:
-        r = ev.get_team_qb(team, up_to_week=10, season=2025)
+    print("QB ratings going into week 16 of 2025:\n")
+    for team in ["JAX", "MIA", "NYG", "NE", "CHI", "DEN", "SEA"]:
+        r = ev.get_team_qb(team, up_to_week=16, season=2025)
         print(f"  {team:4s}  {r.get('player_name', '?'):20s}  "
               f"EPA/att: {r['epa_per_att']:+.4f}  "
               f"({r['source']}, {r['games_used']} games)")
-        print("\nWeek 1 fallback (career avg):")
-    for team in ["KC", "PHI", "BUF"]:
-        curr_check = ev.current[
-            (ev.current["team"] == team) &
-            (ev.current["season"] == 2025) &
-            (ev.current["week"] < 1)
-        ]
+
+    print("\nWeek 1 fallback (career avg):\n")
+    for team in ["JAX", "MIA", "NYJ"]:
+        r = ev.get_team_qb(team, up_to_week=1, season=2025)
+        print(f"  {team:4s}  {r.get('player_name', '?'):20s}  "
+              f"EPA/att: {r['epa_per_att']:+.4f}  "
+              f"({r['source']}, {r['games_used']} games)")
