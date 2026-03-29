@@ -32,14 +32,12 @@ def _weighted_avg(values: np.ndarray) -> float:
     return float(np.dot(last4, w / w.sum()))
 
 
-def _career_avg(player_id: str, historical: pd.DataFrame, before_season: int = None) -> float | None:
+def _career_avg(player_id: str, historical: pd.DataFrame) -> float | None:
     games = historical[historical["player_id"] == player_id]
-    if before_season is not None:
-        games = games[games["season"] < before_season]
     if games.empty:
         return None
     games = games.sort_values(["season", "week"])
-    w     = np.arange(1, len(games) + 1, dtype=float)
+    w = np.arange(1, len(games) + 1, dtype=float)
     return float(np.dot(games["epa_per_att"].values, w / w.sum()))
 
 
