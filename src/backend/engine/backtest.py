@@ -72,24 +72,9 @@ def _has_live_data(matchup: dict, min_games: int = 3) -> bool:
     return True
 
 def compute_player_adjustment(matchup: dict) -> float:
-    """
-    Returns a probability adjustment for the home team based on the full
-    player matchup. Positive = home team has the better personnel edge.
-    """
-    home_off = _offense_score(matchup["home"]["offense"])
-    away_off = _offense_score(matchup["away"]["offense"])
-
-    home_def = _defense_score(matchup["home"]["defense"])
-    away_def = _defense_score(matchup["away"]["defense"])
-
-    # Offense delta: home offense vs away offense
-    off_delta = home_off - away_off
-
-    # Defense delta: home defense suppresses away offense (positive = home advantage)
-    def_delta = home_def - away_def
-
-    raw = (W_QB + W_WR + W_TE + W_RB) * off_delta + W_DEF * def_delta
-    return raw * PLAYER_SCALE
+    home_qb = matchup["home"]["offense"]["qb"].get("epa_per_att", 0.0)
+    away_qb = matchup["away"]["offense"]["qb"].get("epa_per_att", 0.0)
+    return (home_qb - away_qb) * PLAYER_SCALE
 
 
 def build_season_predictions(
@@ -222,25 +207,26 @@ if __name__ == "__main__":
     conditions = condition_analyzer()
     players    = player_analyzer()
 
-    matchup = players.evaluate_matchup("KC", "BUF", 10, 2025)
+    total_elo = 0
+    total_adj = 0
+    total_vegas = 0
+    total_games = 0
 
-    print("KC QB games_used:", matchup["home"]["offense"]["qb"]["games_used"])
-    print("KC QB source:", matchup["home"]["offense"]["qb"]["source"])
-    print("BUF QB games_used:", matchup["away"]["offense"]["qb"]["games_used"])
-    print("BUF QB source:", matchup["away"]["offense"]["qb"]["source"])
+    matchup = players.evaluate_matchup("KC", "BAL", 10, 2024)
 
-    df = build_season_predictions(2023, engine, conditions, players)
-
-    flipped = df[df["elo_winner"] != df["predicted_winner"]]
-    print(f"Games where player adj changed the pick: {len(flipped)}")
-    print(f"Of those, adj was correct: {flipped['adj_correct'].sum()}")
-    print(f"Of those, elo was correct: {flipped['elo_correct'].sum()}")
-    print(f"\nSample flipped games:")
-    print(flipped[["week","home_team","away_team","elo_spread","player_adj","actual_result"]].head(15).to_string(index=False))
-
+    # Print all keys for each position
+    for side in ("home", "away"):
+        print(f"\n{side} offense:")
+        for pos, data in matchup[side]["offense"].items():
+            print(f"  {pos}: {list(data.keys())}")
+        print(f"{side} defense:")
+        print(f"  {list(matchup[side]['defense'].keys())}")
 """
-    for season in range(2020, 2026):
-        print(f"Running backtest for {season} season...")
+    for season in range(1999, 2026):
         df = build_season_predictions(season, engine, conditions, players)
         print_accuracy_report(df, season)
+        total_elo   += df["elo_correct"].sum()
+        total_adj   += df["adj_correct"].sum()
+        total_vegas += df["vegas_correct"].sum()
+        total_games += len(df)
 """

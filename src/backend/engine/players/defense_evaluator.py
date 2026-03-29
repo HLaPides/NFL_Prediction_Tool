@@ -139,7 +139,7 @@ class defense_evaluator:
 
 
 if __name__ == "__main__":
-    da = DefenseAnalyzer()
+    da = defense_evaluator()
 
     print("Defensive ratings going into week 10 of 2025:\n")
     for team in ["HOU", "PHI", "BUF", "NE", "CHI", "DEN", "SEA"]:

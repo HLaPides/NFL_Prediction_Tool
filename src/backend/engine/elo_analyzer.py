@@ -30,19 +30,14 @@ class elo_analyzer:
 
     def win_probability(self, home_rating: float, away_rating: float) -> float:
         return 1.0 / (1 + math.pow(10, (away_rating - home_rating) / 400))
+    
 
-    def update_ratings(
-        self,
-        rating_home: float,
-        rating_away: float,
-        home_score:  int,
-        away_score:  int,
-    ) -> tuple[float, float]:
+    def update_ratings(self, rating_home, rating_away, home_score, away_score):
         adjusted_home = rating_home + self.home_advantage
         prob_home     = self.win_probability(adjusted_home, rating_away)
         prob_away     = 1.0 - prob_home
 
-        point_diff    = home_score - away_score
+        point_diff   = home_score - away_score
         if point_diff > 0:
             outcome_home = 1.0
         elif point_diff < 0:
@@ -50,8 +45,11 @@ class elo_analyzer:
         else:
             outcome_home = 0.5
 
-        new_home = rating_home + self.k_factor * (outcome_home - prob_home)
-        new_away = rating_away + self.k_factor * ((1 - outcome_home) - prob_away)
+        mov = min(math.log(abs(point_diff) + 1), 2.5)
+        k   = self.k_factor * mov
+
+        new_home = rating_home + k * (outcome_home - prob_home)
+        new_away = rating_away + k * ((1 - outcome_home) - prob_away)
         return new_home, new_away
 
     def apply_season_reversion(self) -> None:
@@ -135,3 +133,6 @@ class elo_analyzer:
             "prob_away":      round(1.0 - prob_home, 3),
             "implied_spread": round(elo_diff / 25.0, 1),
         }
+if __name__ == "__main__":
+    elo = elo_analyzer()
+    elo.build_history()
