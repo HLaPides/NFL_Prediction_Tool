@@ -44,7 +44,7 @@ class qb_evaluator:
     #Evaluates QB quality as a weighted EPA/attempt metric.
     def __init__(self):
         self.historical = _load_qb_stats("player_stats")
-        self.current    = _load_qb_stats("player_stats_current")
+        self.current    = self.historical
 
     def evaluate(self, player_id: str, up_to_week: int, season: int) -> dict:
         curr   = self.current[

@@ -3,7 +3,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import pandas as pd
-from data.sql_helpers import load_schedules, load_game_odds, load_elo_history
+from data.sql_helpers import load_schedules, load_game_odds, load_elo_history, get_connection
 from engine.elo_analyzer import elo_analyzer
 from engine.condition_analyzer import condition_analyzer
 from engine.main_engine import DOME_ADJ, COLD_ADJ, HIGH_WIND_ADJ, SEVERE_WIND_ADJ, TURF_ADJ
@@ -222,7 +222,25 @@ if __name__ == "__main__":
     conditions = condition_analyzer()
     players    = player_analyzer()
 
+    matchup = players.evaluate_matchup("KC", "BUF", 10, 2025)
+
+    print("KC QB games_used:", matchup["home"]["offense"]["qb"]["games_used"])
+    print("KC QB source:", matchup["home"]["offense"]["qb"]["source"])
+    print("BUF QB games_used:", matchup["away"]["offense"]["qb"]["games_used"])
+    print("BUF QB source:", matchup["away"]["offense"]["qb"]["source"])
+
+    df = build_season_predictions(2023, engine, conditions, players)
+
+    flipped = df[df["elo_winner"] != df["predicted_winner"]]
+    print(f"Games where player adj changed the pick: {len(flipped)}")
+    print(f"Of those, adj was correct: {flipped['adj_correct'].sum()}")
+    print(f"Of those, elo was correct: {flipped['elo_correct'].sum()}")
+    print(f"\nSample flipped games:")
+    print(flipped[["week","home_team","away_team","elo_spread","player_adj","actual_result"]].head(15).to_string(index=False))
+
+"""
     for season in range(2020, 2026):
         print(f"Running backtest for {season} season...")
         df = build_season_predictions(season, engine, conditions, players)
         print_accuracy_report(df, season)
+"""
