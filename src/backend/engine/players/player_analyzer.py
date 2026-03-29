@@ -7,6 +7,7 @@ from engine.players.wr_evaluator import wr_evaluator
 from engine.players.te_evaluator import te_evaluator
 from engine.players.rb_evaluator import rb_evaluator
 from engine.players.defense_evaluator import defense_evaluator
+import pandas as pd
 
 
 class player_analyzer:
@@ -24,29 +25,70 @@ class player_analyzer:
         self.defense = defense_evaluator()
 
     #Evaluates qb, we, te, rb, and defense
-    def evaluate_team(self, team: str, up_to_week: int, season: int) -> dict:
+    def evaluate_team(self, team: str, up_to_week: int, season: int,
+                  injuries: pd.DataFrame = None) -> dict:
+
+        # Identify starters first so we can check injury status
         qb = self.qb.get_team_qb(team, up_to_week, season)
         wr = self.wr.get_team_wr1(team, up_to_week, season)
         te = self.te.get_team_te1(team, up_to_week, season)
         rb = self.rb.get_team_rb1(team, up_to_week, season)
-        df = self.defense.analyze(team, up_to_week, season)
 
+        # If injury report provided, substitute any out/doubtful starters
+        if injuries is not None and not injuries.empty:
+            from data.injury_getter import get_qb_status, UNLIKELY_STATUSES
+
+            qb_name   = qb.get("player_name", "")
+            qb_status = get_qb_status(injuries, qb_name)
+            if qb_status in UNLIKELY_STATUSES:
+                qb = self.qb.get_team_qb(team, up_to_week, season,
+                                        exclude_id=qb.get("player_id"))
+                qb["injury_sub"] = True
+
+            # WR
+            wr_name = wr.get("player_name", "")
+            wr_inj  = injuries[injuries["player_name"].str.contains(
+                wr_name.split(".")[-1], case=False, na=False
+            )] if wr_name else pd.DataFrame()
+            if not wr_inj.empty and wr_inj.iloc[0]["status"] in UNLIKELY_STATUSES:
+                wr = self.wr.get_team_wr1(team, up_to_week, season,
+                                        exclude_id=wr.get("player_id"))
+                wr["injury_sub"] = True
+
+            # TE
+            te_name = te.get("player_name", "")
+            te_inj  = injuries[injuries["player_name"].str.contains(
+                te_name.split(".")[-1], case=False, na=False
+            )] if te_name else pd.DataFrame()
+            if not te_inj.empty and te_inj.iloc[0]["status"] in UNLIKELY_STATUSES:
+                te = self.te.get_team_te1(team, up_to_week, season,
+                                        exclude_id=te.get("player_id"))
+                te["injury_sub"] = True
+
+            # RB
+            rb_name = rb.get("player_name", "")
+            rb_inj  = injuries[injuries["player_name"].str.contains(
+                rb_name.split(".")[-1], case=False, na=False
+            )] if rb_name else pd.DataFrame()
+            if not rb_inj.empty and rb_inj.iloc[0]["status"] in UNLIKELY_STATUSES:
+                rb = self.rb.get_team_rb1(team, up_to_week, season,
+                                        exclude_id=rb.get("player_id"))
+                rb["injury_sub"] = True
+
+        df = self.defense.analyze(team, up_to_week, season)
         return {
             "team":    team,
-            "offense": {
-                "qb": qb,
-                "wr": wr,
-                "te": te,
-                "rb": rb,
-            },
+            "offense": {"qb": qb, "wr": wr, "te": te, "rb": rb},
             "defense": df,
         }
 
+
     def evaluate_matchup(self, home_team: str, away_team: str,
-                         week: int, season: int) -> dict:
+                        week: int, season: int,
+                        injuries: pd.DataFrame = None) -> dict:
         return {
-            "home": self.evaluate_team(home_team, week, season),
-            "away": self.evaluate_team(away_team, week, season),
+            "home": self.evaluate_team(home_team, week, season, injuries),
+            "away": self.evaluate_team(away_team, week, season, injuries),
         }
 
 

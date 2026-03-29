@@ -7,6 +7,7 @@ from data.sql_helpers import load_current_elo_ratings, get_connection
 from engine.elo_analyzer import elo_analyzer
 from engine.condition_analyzer import condition_analyzer
 from engine.players.player_analyzer import player_analyzer
+from data.injury_getter import fetch_injuries
 
 # Condition weights — zeroed out until Bayesian model learns proper values
 DOME_ADJ        = 0.0
@@ -65,7 +66,9 @@ class MainEngine:
         elif cond["high_wind"]: adj += HIGH_WIND_ADJ
         if cond["is_turf"]:     adj += TURF_ADJ
 
-        personnel = self.players.evaluate_matchup(home_team, away_team, week, season)
+        injuries  = fetch_injuries()
+        personnel = self.players.evaluate_matchup(home_team, away_team, week, season,
+                                                  injuries=injuries)
 
         return {
             "home_team":      home_team,

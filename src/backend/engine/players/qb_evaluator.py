@@ -69,22 +69,29 @@ class qb_evaluator:
         cw  = CAREER_BLEND[n]
         epa = cw * career + (1 - cw) * _weighted_avg(curr["epa_per_att"].values)
         return self._result(player_id, epa, "blended", n)
-
-    def get_team_qb(self, team: str, up_to_week: int, season: int) -> dict:
+    
+    def get_team_qb(self, team: str, up_to_week: int, season: int,
+                exclude_id: str = None) -> dict:
         curr = self.current[
             (self.current["team"]   == team) &
             (self.current["season"] == season) &
             (self.current["week"]   <  up_to_week)
         ]
 
+        if exclude_id:
+            curr = curr[curr["player_id"] != exclude_id]
+
         if not curr.empty:
             pid, name = curr.groupby(["player_id", "player_name"])["attempts"].sum().idxmax()
             result    = self.evaluate(pid, up_to_week, season)
             result["player_name"] = name
+            result["is_backup"]   = True  
             return result
 
-        # No current season data — fall back to last season's starter
-        hist = self.historical[self.historical["team"] == team]
+        hist = self.historical[
+            (self.historical["team"] == team) &
+            (self.historical["player_id"] != exclude_id if exclude_id else True)
+        ]
         if hist.empty:
             return self._result(None, LEAGUE_AVG_EPA, "no_data", 0, player_name="Unknown")
 

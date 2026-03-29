@@ -104,8 +104,9 @@ class rb_evaluator:
             cw * ca["carry_share"]     + (1 - cw) * _weighted_avg(curr["carry_share"].values),
             "blended", n
         )
-
-    def get_team_rb1(self, team: str, up_to_week: int, season: int) -> dict:
+    
+    def get_team_rb1(self, team: str, up_to_week: int, season: int,
+                 exclude_id: str = None) -> dict:
         curr = self.current[
             (self.current["team"]   == team) &
             (self.current["season"] == season) &
@@ -114,19 +115,25 @@ class rb_evaluator:
 
         if not curr.empty:
             last_team  = (self.current[self.current["season"] == season]
-                          .sort_values("week")
-                          .groupby("player_id")["team"]
-                          .last())
+                        .sort_values("week")
+                        .groupby("player_id")["team"]
+                        .last())
             valid_pids = last_team[last_team == team].index
             curr       = curr[curr["player_id"].isin(valid_pids)]
+
+        if exclude_id:
+            curr = curr[curr["player_id"] != exclude_id]
 
         if not curr.empty:
             pid, name = curr.groupby(["player_id", "player_name"])["carry_share"].mean().idxmax()
             result    = self.evaluate(pid, up_to_week, season)
             result["player_name"] = name
+            result["is_backup"]   = True
             return result
 
         hist = self.historical[self.historical["team"] == team]
+        if exclude_id:
+            hist = hist[hist["player_id"] != exclude_id]
         if hist.empty:
             return self._result(None, LEAGUE_AVG_RUSH, LEAGUE_AVG_REC,
                                 LEAGUE_AVG_SHARE, "no_data", 0, player_name="Unknown")

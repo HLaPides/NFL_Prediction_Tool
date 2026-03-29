@@ -37,7 +37,7 @@ def load_training_data() -> pd.DataFrame:
                 CASE WHEN CAST(COALESCE(c.wind, 0)  AS FLOAT) > 25 THEN 1 ELSE 0 END AS severe_wind,
                 CASE WHEN c.surface NOT IN ('grass', 'Grass') THEN 1 ELSE 0 END       AS is_turf,
 
-                pf.home_qb_epa,          pf.away_qb_epa,
+                 pf.home_qb_epa,          pf.away_qb_epa,
                 pf.home_qb_games,        pf.away_qb_games,
                 pf.home_wr_yards,        pf.away_wr_yards,
                 pf.home_wr_target_share, pf.away_wr_target_share,
@@ -46,12 +46,7 @@ def load_training_data() -> pd.DataFrame:
                 pf.home_rb_rush_yards,   pf.away_rb_rush_yards,
                 pf.home_rb_rec_yards,    pf.away_rb_rec_yards,
                 pf.home_rb_carry_share,  pf.away_rb_carry_share,
-                pf.home_pts_allowed,     pf.away_pts_allowed,
-                pf.home_pass_yards_allowed, pf.away_pass_yards_allowed,
-                pf.home_rush_yards_allowed, pf.away_rush_yards_allowed,
-                pf.home_sacks,           pf.away_sacks,
-                pf.home_turnovers_forced, pf.away_turnovers_forced,
-                         
+
                 hr.roll_passing_epa    AS home_roll_pass_epa,
                 hr.roll_rushing_epa    AS home_roll_rush_epa,
                 hr.roll_passing_yards  AS home_roll_pass_yards,
@@ -67,7 +62,7 @@ def load_training_data() -> pd.DataFrame:
                 ar.roll_def_sacks      AS away_roll_def_sacks,
                 ar.roll_def_ints       AS away_roll_def_ints,
                 ar.roll_def_tfl        AS away_roll_def_tfl
-
+                         
             FROM schedules s
             JOIN elo_history h  ON h.game_id = s.game_id AND h.team = s.home_team
             JOIN elo_history a  ON a.game_id = s.game_id AND a.team = s.away_team
@@ -97,11 +92,6 @@ def load_training_data() -> pd.DataFrame:
     df["te_yards_diff"]         = df["home_te_yards"]         - df["away_te_yards"]
     df["rb_rush_diff"]          = df["home_rb_rush_yards"]    - df["away_rb_rush_yards"]
     df["rb_rec_diff"]           = df["home_rb_rec_yards"]     - df["away_rb_rec_yards"]
-    df["pts_allowed_diff"]      = df["home_pts_allowed"]      - df["away_pts_allowed"]
-    df["pass_def_diff"]         = df["home_pass_yards_allowed"] - df["away_pass_yards_allowed"]
-    df["rush_def_diff"]         = df["home_rush_yards_allowed"] - df["away_rush_yards_allowed"]
-    df["sacks_diff"]            = df["home_sacks"]            - df["away_sacks"]
-    df["turnovers_forced_diff"] = df["home_turnovers_forced"] - df["away_turnovers_forced"]
 
     return df
 
@@ -123,8 +113,6 @@ FEATURE_COLS = [
     "te_yards_diff",  "home_te_yards",  "away_te_yards",
     "rb_rush_diff",   "home_rb_rush_yards", "away_rb_rush_yards",
     "rb_rec_diff",
-    # Turnovers and pass rush
-    "turnovers_forced_diff", "sacks_diff",
     # Rolling team form
     "roll_pass_epa_diff", "roll_rush_epa_diff",
     "roll_pass_yards_diff", "roll_rush_yards_diff",
