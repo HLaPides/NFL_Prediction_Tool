@@ -5,7 +5,8 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 import pandas as pd
 from data.sql_helpers import load_current_elo_ratings, get_connection
 from engine.elo_analyzer import elo_analyzer
-from engine.condition_analyzer import ConditionAnalyzer
+from engine.condition_analyzer import condition_analyzer
+from engine.players.player_analyzer import player_analyzer
 
 # Condition weights — zeroed out until Bayesian model learns proper values
 DOME_ADJ        = 0.0
@@ -16,11 +17,23 @@ TURF_ADJ        = 0.0
 
 
 class MainEngine:
-#Missing teamform and player analytics
+    """
+    Orchestrates all prediction components into a single adjusted probability.
 
-    def __init__(self, elo: elo_analyzer = None, conditions: ConditionAnalyzer = None):
-        self.elo        = elo or elo_analyzer()
-        self.conditions = conditions or ConditionAnalyzer()
+    Current components:
+        - EloEngine       (base probability)
+        - ConditionsAnalyzer (weather + surface features)
+
+    Planned:
+        - PersonnelAnalyzer
+        - TeamFormAnalyzer
+    """
+
+    def __init__(self, elo: elo_analyzer = None, conditions: condition_analyzer = None,
+                 players: player_analyzer = None):
+        self.elo        = elo        or elo_analyzer()
+        self.conditions = conditions or condition_analyzer()
+        self.players    = players    or player_analyzer()
         self.elo.ratings = load_current_elo_ratings()
 
     def predict(
@@ -35,7 +48,10 @@ class MainEngine:
         wind:      float = None,
         surface:   str   = None,
     ) -> dict:
-        #Pass game id for historical game, everything else for live
+        """
+        Historical mode — pass game_id to look up conditions from DB.
+        Live mode       — pass roof, temp, wind, surface directly.
+        """
         pred = self.elo.predict(home_team, away_team)
 
         cond = (self.conditions.analyze_game(game_id) if game_id
@@ -49,6 +65,8 @@ class MainEngine:
         elif cond["high_wind"]: adj += HIGH_WIND_ADJ
         if cond["is_turf"]:     adj += TURF_ADJ
 
+        personnel = self.players.evaluate_matchup(home_team, away_team, week, season)
+
         return {
             "home_team":      home_team,
             "away_team":      away_team,
@@ -56,12 +74,12 @@ class MainEngine:
             "adjusted_prob":  round(max(0.01, min(0.99, pred["prob_home"] + adj)), 3),
             "implied_spread": pred["implied_spread"],
             "conditions":     cond,
-            "personnel":      {},
+            "personnel":      personnel,
             "form":           {},
         }
 
-    #Predicts all games in a week
     def predict_week(self, season: int, week: int) -> list[dict]:
+        """Generates predictions for all games in a given week."""
         with get_connection() as conn:
             games = pd.read_sql(f"""
                 SELECT game_id, home_team, away_team
@@ -100,6 +118,15 @@ if __name__ == "__main__":
     print(f"  Adjusted prob: {pred['adjusted_prob']}")
     print(f"  Implied spread:{pred['implied_spread']}")
     print(f"  Conditions:    {pred['conditions']}")
+    for side in ["home", "away"]:
+        p = pred["personnel"][side]
+        print(f"\n  {p['team']} offense:")
+        print(f"    QB  {p['offense']['qb'].get('player_name','?'):20s}  EPA/att: {p['offense']['qb']['epa_per_att']:+.4f}")
+        print(f"    WR1 {p['offense']['wr'].get('player_name','?'):20s}  Yards: {p['offense']['wr']['receiving_yards']:.1f}")
+        print(f"    TE1 {p['offense']['te'].get('player_name','?'):20s}  Yards: {p['offense']['te']['receiving_yards']:.1f}")
+        print(f"    RB1 {p['offense']['rb'].get('player_name','?'):20s}  Rush: {p['offense']['rb']['rush_yards']:.1f}")
+        print(f"  {p['team']} defense:")
+        print(f"    Pts: {p['defense']['pts_allowed']:.1f}  Pass: {p['defense']['pass_yards_allowed']:.1f}  Rush: {p['defense']['rush_yards_allowed']:.1f}")
 
     print("\nWeek 1 2024 predictions:")
     for p in engine.predict_week(season=2024, week=1):

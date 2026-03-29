@@ -14,7 +14,7 @@ SEVERE_WIND = 25
 DOME_ROOFS = {"dome", "closed", "retractable"}
 
 #Analyzes wind, temperature, turf surface, and roof for a given game
-class ConditionAnalyzer:
+class condition_analyzer:
 
     def __init__(self):
         with get_connection() as conn:

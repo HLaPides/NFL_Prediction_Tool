@@ -37,9 +37,8 @@ def _career_avg(player_id: str, historical: pd.DataFrame) -> float | None:
     if games.empty:
         return None
     games = games.sort_values(["season", "week"])
-    w = np.arange(1, len(games) + 1, dtype=float)
+    w    = np.arange(1, len(games) + 1, dtype=float)
     return float(np.dot(games["epa_per_att"].values, w / w.sum()))
-
 
 class qb_evaluator:
     #Evaluates QB quality as a weighted EPA/attempt metric.
@@ -54,7 +53,7 @@ class qb_evaluator:
             (self.current["week"]      <  up_to_week)
         ].sort_values("week")
 
-        career = _career_avg(player_id, self.historical, before_season=season)
+        career = _career_avg(player_id, self.historical)
         n      = len(curr)
 
         if n >= 4:
