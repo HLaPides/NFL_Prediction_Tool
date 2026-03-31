@@ -7,9 +7,11 @@ import numpy as np
 from xgboost import XGBRegressor
 from sklearn.metrics import mean_absolute_error
 from data.sql_helpers import get_connection, save
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import make_scorer, mean_absolute_error
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-MIN_SEASON = 2015   # earliest season with player features
+MIN_SEASON = 1999
 
 
 # ── Data loading ──────────────────────────────────────────────────────────────
@@ -61,7 +63,17 @@ def load_training_data() -> pd.DataFrame:
                 ar.roll_rushing_yards  AS away_roll_rush_yards,
                 ar.roll_def_sacks      AS away_roll_def_sacks,
                 ar.roll_def_ints       AS away_roll_def_ints,
-                ar.roll_def_tfl        AS away_roll_def_tfl
+                ar.roll_def_tfl        AS away_roll_def_tfl,
+                         
+                hr.roll_avg_margin     AS home_roll_avg_margin,
+                hr.roll_margin_trend   AS home_roll_margin_trend,
+                hr.roll_blowout_wins   AS home_roll_blowout_wins,
+                hr.roll_blowout_losses AS home_roll_blowout_losses,
+                         
+                ar.roll_avg_margin     AS away_roll_avg_margin,
+                ar.roll_margin_trend   AS away_roll_margin_trend,
+                ar.roll_blowout_wins   AS away_roll_blowout_wins,
+                ar.roll_blowout_losses AS away_roll_blowout_losses
                          
             FROM schedules s
             JOIN elo_history h  ON h.game_id = s.game_id AND h.team = s.home_team
@@ -71,7 +83,7 @@ def load_training_data() -> pd.DataFrame:
             LEFT JOIN game_conditions c  ON c.game_id = s.game_id
             LEFT JOIN team_rolling_stats hr ON hr.game_id = s.game_id AND hr.team = s.home_team
             LEFT JOIN team_rolling_stats ar ON ar.game_id = s.game_id AND ar.team = s.away_team
-            WHERE s.game_type = 'REG'
+            WHERE s.game_type IN ('REG', 'WC', 'DIV', 'CON', 'SB')
             AND s.result IS NOT NULL
             AND s.season >= ?
             ORDER BY s.season, s.week
@@ -85,6 +97,8 @@ def load_training_data() -> pd.DataFrame:
     df["roll_def_sacks_diff"]  = df["home_roll_def_sacks"]  - df["away_roll_def_sacks"]
     df["roll_def_ints_diff"]   = df["home_roll_def_ints"]   - df["away_roll_def_ints"]
     df["roll_def_tfl_diff"]    = df["home_roll_def_tfl"]    - df["away_roll_def_tfl"]
+    df["roll_avg_margin_diff"]   = df["home_roll_avg_margin"]   - df["away_roll_avg_margin"]
+    df["roll_margin_trend_diff"] = df["home_roll_margin_trend"] - df["away_roll_margin_trend"]
 
     # Derived delta features — model learns from matchup differences
     df["qb_epa_diff"]           = df["home_qb_epa"]          - df["away_qb_epa"]
@@ -99,21 +113,15 @@ def load_training_data() -> pd.DataFrame:
 # ── Feature columns ───────────────────────────────────────────────────────────
 
 FEATURE_COLS = [
-    # ELO
     "elo_diff", "home_elo", "away_elo",
-    # Vegas — single strongest predictor
     "vegas_spread",
-    # Game context
     "rest_diff", "div_game",
     "is_dome", "is_cold", "high_wind", "severe_wind", "is_turf",
-    # QB — most predictive player signal
     "qb_epa_diff", "home_qb_epa", "away_qb_epa",
-    # Skill positions
     "wr_yards_diff",  "home_wr_yards",  "away_wr_yards",
     "te_yards_diff",  "home_te_yards",  "away_te_yards",
     "rb_rush_diff",   "home_rb_rush_yards", "away_rb_rush_yards",
     "rb_rec_diff",
-    # Rolling team form
     "roll_pass_epa_diff", "roll_rush_epa_diff",
     "roll_pass_yards_diff", "roll_rush_yards_diff",
     "roll_def_sacks_diff", "roll_def_ints_diff", "roll_def_tfl_diff",
@@ -122,6 +130,50 @@ FEATURE_COLS = [
     "home_roll_rush_yards", "away_roll_rush_yards",
 ]
 
+
+def tune_hyperparameters(df: pd.DataFrame) -> dict:
+    """
+    Runs grid search on a single train/test split (2020-2023 train, 2024 test)
+    to find best XGBoost params before running full walk-forward backtest.
+    """
+    train = df[df["season"] < 2025]
+    test  = df[df["season"] == 2025]
+
+    X_train = train[FEATURE_COLS].fillna(0)
+    y_train = train["result"]
+    X_test  = test[FEATURE_COLS].fillna(0)
+    y_test  = test["result"]
+
+    param_grid = {
+        "n_estimators":    [100, 200, 400],
+        "max_depth":       [3, 4, 6],
+        "learning_rate":   [0.01, 0.05, 0.1],
+        "subsample":       [0.7, 0.8, 1.0],
+        "colsample_bytree":[0.7, 0.8, 1.0],
+    }
+
+    model = XGBRegressor(random_state=42, verbosity=0)
+    scorer = make_scorer(mean_absolute_error, greater_is_better=False)
+
+    search = GridSearchCV(model, param_grid, scoring=scorer,
+                          cv=3, n_jobs=-1, verbose=2)
+    search.fit(X_train, y_train)
+
+    print(f"\nBest params: {search.best_params_}")
+    print(f"Best CV MAE: {-search.best_score_:.2f}")
+
+    # Test on 2025
+    best = search.best_estimator_
+    preds = best.predict(X_test)
+    mae = mean_absolute_error(y_test, preds)
+    winner_pct = (
+        (np.where(preds > 0, test["home_team"], test["away_team"]) ==
+         np.where(test["result"] > 0, test["home_team"], test["away_team"]))
+    ).mean() * 100
+    print(f"2025 MAE: {mae:.2f}")
+    print(f"2025 Winner%: {winner_pct:.1f}%")
+
+    return search.best_params_
 
 # ── Walk-forward validation ───────────────────────────────────────────────────
 
@@ -147,10 +199,10 @@ def walk_forward_backtest(df: pd.DataFrame) -> pd.DataFrame:
 
         model = XGBRegressor(
             n_estimators=200,
-            max_depth=4,
-            learning_rate=0.05,
+            max_depth=3,
+            learning_rate=0.01,
             subsample=0.8,
-            colsample_bytree=0.8,
+            colsample_bytree=1,
             random_state=42,
             verbosity=0,
         )
@@ -223,3 +275,11 @@ if __name__ == "__main__":
     print("\nSaving predictions to model_predictions table...")
     save(results, "model_predictions")
     print("Done.")
+
+    """
+    print("Loading training data...")
+    df = load_training_data()
+
+    print("Tuning hyperparameters...")
+    best_params = tune_hyperparameters(df)
+    """

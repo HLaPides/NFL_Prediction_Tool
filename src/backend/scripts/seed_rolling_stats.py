@@ -9,149 +9,97 @@ from data.sql_helpers import get_connection, save
 ROLLING_WEEKS = 4
 
 
-def _load_player_stats() -> pd.DataFrame:
+def build_rolling_stats() -> pd.DataFrame:
     with get_connection() as conn:
-        return pd.read_sql("""
-            SELECT player_id, player_name, position, team, season, week, game_id,
-                   attempts, passing_epa, rushing_epa,
-                   receiving_yards, targets, target_share,
-                   rushing_yards, carries
-            FROM player_stats
-            WHERE season_type = 'REG'
-            AND position IN ('QB', 'WR', 'TE', 'RB')
+        # Team stats with game_id joined from schedules
+        stats = pd.read_sql("""
+            SELECT
+                t.season, t.week, t.team,
+                s.game_id,
+                s.home_team, s.away_team,
+                s.home_score, s.away_score,
+                t.passing_epa, t.rushing_epa,
+                t.passing_yards, t.rushing_yards,
+                t.passing_tds, t.rushing_tds,
+                t.passing_interceptions,
+                t.def_sacks, t.def_interceptions,
+                t.def_fumbles_forced, t.def_tackles_for_loss,
+                t.def_qb_hits, t.def_pass_defended
+            FROM team_stats_weekly t
+            JOIN schedules s
+                ON s.season = t.season
+                AND s.week   = t.week
+                AND (s.home_team = t.team OR s.away_team = t.team)
+            WHERE t.season_type IN ('REG', 'POST')
+            ORDER BY t.season, t.week
+        """, conn)
+
+        # Load ELO history for SOS calculation
+        elo_hist = pd.read_sql("""
+            SELECT season, week, team, opponent, elo_before AS opp_elo_before
+            FROM elo_history
             ORDER BY season, week
         """, conn)
 
-
-def _rolling_avg(grp: pd.DataFrame, col: str, up_to_idx: int) -> float:
-    """4-week rolling average of col strictly before up_to_idx."""
-    past = grp[grp.index < up_to_idx][col].dropna().tail(ROLLING_WEEKS)
-    return float(past.mean()) if not past.empty else np.nan
-
-
-def _get_starter(grp: pd.DataFrame, up_to_idx: int, volume_col: str) -> str | None:
-    """Returns player_id with most volume strictly before up_to_idx."""
-    past = grp[grp.index < up_to_idx]
-    if past.empty:
-        return None
-    totals = past.groupby("player_id")[volume_col].sum()
-    return totals.idxmax() if not totals.empty else None
-
-
-def build_player_features() -> pd.DataFrame:
-    print("Loading player stats...")
-    df = _load_player_stats()
-
-    # Load all schedule game_ids to iterate over
-    with get_connection() as conn:
-        sched = pd.read_sql("""
-            SELECT game_id, season, week, home_team, away_team
-            FROM schedules
-            WHERE game_type = 'REG'
-            AND home_score IS NOT NULL
-            ORDER BY season, week
-        """, conn)
-
-    # Pre-group by position and team for fast lookup
-    qbs  = df[df["position"] == "QB"].copy()
-    wrs  = df[df["position"] == "WR"].copy()
-    tes  = df[df["position"] == "TE"].copy()
-    rbs  = df[df["position"] == "RB"].copy()
+    # Compute point differential from each team's perspective
+    stats["point_diff"] = np.where(
+        stats["team"] == stats["home_team"],
+        stats["home_score"] - stats["away_score"],
+        stats["away_score"] - stats["home_score"]
+    )
 
     rows = []
-    total = len(sched)
 
-    for i, (_, game) in enumerate(sched.iterrows(), 1):
-        if i % 200 == 0:
-            print(f"  {i}/{total} games...")
+    for team, grp in stats.groupby("team"):
+        grp = grp.sort_values(["season", "week"]).reset_index(drop=True)
 
-        season = game["season"]
-        week   = game["week"]
+        # Get this team's ELO history for SOS lookup
+        team_elo = elo_hist[elo_hist["team"] == team].copy()
 
-        row = {"game_id": game["game_id"], "season": season, "week": week}
+        for i, row in grp.iterrows():
+            past = grp[
+                (grp["season"] < row["season"]) |
+                ((grp["season"] == row["season"]) & (grp["week"] < row["week"]))
+            ].tail(ROLLING_WEEKS)
 
-        for side, team in (("home", game["home_team"]), ("away", game["away_team"])):
+            if past.empty:
+                rows.append({"game_id": row["game_id"], "team": team})
+                continue
 
-            # ── QB ────────────────────────────────────────────────────────
-            tqb = qbs[(qbs["team"] == team) &
-                      ((qbs["season"] < season) |
-                       ((qbs["season"] == season) & (qbs["week"] < week)))]
+            # Point differential momentum
+            margins       = past["point_diff"].values
+            avg_margin    = float(margins.mean())
+            margin_trend  = float(margins[-1] - margins[0]) if len(margins) > 1 else 0.0
+            blowout_wins  = float((margins >= 14).mean())
+            blowout_losses = float((margins <= -14).mean())
 
-            if not tqb.empty:
-                # Starter = most attempts in last 4 games
-                starter_id = (tqb.tail(ROLLING_WEEKS)
-                                 .groupby("player_id")["attempts"].sum()
-                                 .idxmax())
-                sqb = tqb[tqb["player_id"] == starter_id].tail(ROLLING_WEEKS)
-                passing_epa = sqb["passing_epa"].mean()
-                rushing_epa = sqb["rushing_epa"].fillna(0).mean()
-                attempts    = sqb["attempts"].mean()
-                qb_epa = (passing_epa + rushing_epa) / max(attempts, 1) if attempts > 0 else np.nan
-            else:
-                qb_epa = np.nan
-
-            row[f"{side}_qb_epa"]    = round(qb_epa, 4) if not np.isnan(qb_epa) else np.nan
-            row[f"{side}_qb_games"]  = len(tqb["week"].unique()) if not tqb.empty else 0
-
-            # ── WR ────────────────────────────────────────────────────────
-            twr = wrs[(wrs["team"] == team) &
-                      ((wrs["season"] < season) |
-                       ((wrs["season"] == season) & (wrs["week"] < week)))]
-
-            if not twr.empty:
-                starter_id = (twr.tail(ROLLING_WEEKS)
-                                 .groupby("player_id")["targets"].sum()
-                                 .idxmax())
-                swr = twr[twr["player_id"] == starter_id].tail(ROLLING_WEEKS)
-                row[f"{side}_wr_yards"]        = swr["receiving_yards"].mean()
-                row[f"{side}_wr_target_share"] = swr["target_share"].mean()
-            else:
-                row[f"{side}_wr_yards"]        = np.nan
-                row[f"{side}_wr_target_share"] = np.nan
-
-            # ── TE ────────────────────────────────────────────────────────
-            tte = tes[(tes["team"] == team) &
-                      ((tes["season"] < season) |
-                       ((tes["season"] == season) & (tes["week"] < week)))]
-
-            if not tte.empty:
-                starter_id = (tte.tail(ROLLING_WEEKS)
-                                 .groupby("player_id")["targets"].sum()
-                                 .idxmax())
-                ste = tte[tte["player_id"] == starter_id].tail(ROLLING_WEEKS)
-                row[f"{side}_te_yards"]        = ste["receiving_yards"].mean()
-                row[f"{side}_te_target_share"] = ste["target_share"].mean()
-            else:
-                row[f"{side}_te_yards"]        = np.nan
-                row[f"{side}_te_target_share"] = np.nan
-
-            # ── RB ────────────────────────────────────────────────────────
-            trb = rbs[(rbs["team"] == team) &
-                      ((rbs["season"] < season) |
-                       ((rbs["season"] == season) & (rbs["week"] < week)))]
-
-            if not trb.empty:
-                starter_id = (trb.tail(ROLLING_WEEKS)
-                                 .groupby("player_id")["carries"].sum()
-                                 .idxmax())
-                srb = trb[trb["player_id"] == starter_id].tail(ROLLING_WEEKS)
-                row[f"{side}_rb_rush_yards"] = srb["rushing_yards"].mean()
-                row[f"{side}_rb_rec_yards"]  = srb["receiving_yards"].mean()
-                row[f"{side}_rb_carry_share"] = srb["carries"].sum() / max(
-                    trb.tail(ROLLING_WEEKS)["carries"].sum(), 1)
-            else:
-                row[f"{side}_rb_rush_yards"]  = np.nan
-                row[f"{side}_rb_rec_yards"]   = np.nan
-                row[f"{side}_rb_carry_share"] = np.nan
-
-        rows.append(row)
+            rows.append({
+                "game_id":             row["game_id"],
+                "team":                team,
+                "roll_passing_epa":    past["passing_epa"].mean(),
+                "roll_rushing_epa":    past["rushing_epa"].mean(),
+                "roll_passing_yards":  past["passing_yards"].mean(),
+                "roll_rushing_yards":  past["rushing_yards"].mean(),
+                "roll_passing_tds":    past["passing_tds"].mean(),
+                "roll_interceptions":  past["passing_interceptions"].mean(),
+                "roll_def_sacks":      past["def_sacks"].mean(),
+                "roll_def_ints":       past["def_interceptions"].mean(),
+                "roll_def_fumbles":    past["def_fumbles_forced"].mean(),
+                "roll_def_tfl":        past["def_tackles_for_loss"].mean(),
+                "roll_def_qb_hits":    past["def_qb_hits"].mean(),
+                "roll_def_pass_def":   past["def_pass_defended"].mean(),
+                "roll_avg_margin":     avg_margin,
+                "roll_margin_trend":   margin_trend,
+                "roll_blowout_wins":   blowout_wins,
+                "roll_blowout_losses": blowout_losses
+            })
 
     return pd.DataFrame(rows)
 
 
 if __name__ == "__main__":
-    print("Building rolling player features...")
-    df = build_player_features()
-    save(df, "player_features")
-    print(f"Saved {len(df)} rows to player_features")
-    print(df.dropna(subset=["home_qb_epa"]).head(3).to_string())
+    print("Building rolling team stats with momentum...")
+    df = build_rolling_stats()
+    save(df, "team_rolling_stats")
+    print(f"Saved {len(df)} rows to team_rolling_stats")
+    print(df.dropna(subset=["roll_avg_margin"]).head(3).to_string())

@@ -1,6 +1,11 @@
-import requests, json
+from backend.data.sql_helpers import get_connection
+import pandas as pd
 
-url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/injuries"
-resp = requests.get(url, timeout=10)
-print(resp.status_code)
-print(json.dumps(resp.json(), indent=2)[:3000])
+with get_connection() as conn:
+    df = pd.read_sql("""
+        SELECT h.season, h.week, h.team, h.opponent, h.elo_before, h.elo_after
+        FROM elo_history h
+        WHERE h.team = 'KC' AND h.season = 2024
+        ORDER BY h.week
+    """, conn)
+print(df.head(10).to_string())
