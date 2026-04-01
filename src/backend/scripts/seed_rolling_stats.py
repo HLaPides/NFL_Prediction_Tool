@@ -22,6 +22,10 @@ def build_rolling_stats() -> pd.DataFrame:
                 t.passing_yards, t.rushing_yards,
                 t.passing_tds, t.rushing_tds,
                 t.passing_interceptions,
+                t.rushing_fumbles, t.receiving_fumbles,
+                t.passing_first_downs, t.rushing_first_downs,
+                t.receiving_first_downs,
+                t.penalties, t.penalty_yards,
                 t.def_sacks, t.def_interceptions,
                 t.def_fumbles_forced, t.def_tackles_for_loss,
                 t.def_qb_hits, t.def_pass_defended
@@ -34,12 +38,7 @@ def build_rolling_stats() -> pd.DataFrame:
             ORDER BY t.season, t.week
         """, conn)
 
-        # Load ELO history for SOS calculation
-        elo_hist = pd.read_sql("""
-            SELECT season, week, team, opponent, elo_before AS opp_elo_before
-            FROM elo_history
-            ORDER BY season, week
-        """, conn)
+        # Load ELO history for SOS calculation — removed, redundant with ELO diff
 
     # Compute point differential from each team's perspective
     stats["point_diff"] = np.where(
@@ -53,9 +52,6 @@ def build_rolling_stats() -> pd.DataFrame:
     for team, grp in stats.groupby("team"):
         grp = grp.sort_values(["season", "week"]).reset_index(drop=True)
 
-        # Get this team's ELO history for SOS lookup
-        team_elo = elo_hist[elo_hist["team"] == team].copy()
-
         for i, row in grp.iterrows():
             past = grp[
                 (grp["season"] < row["season"]) |
@@ -67,15 +63,24 @@ def build_rolling_stats() -> pd.DataFrame:
                 continue
 
             # Point differential momentum
-            margins       = past["point_diff"].values
-            avg_margin    = float(margins.mean())
-            margin_trend  = float(margins[-1] - margins[0]) if len(margins) > 1 else 0.0
-            blowout_wins  = float((margins >= 14).mean())
+            margins        = past["point_diff"].values
+            avg_margin     = float(margins.mean())
+            margin_trend   = float(margins[-1] - margins[0]) if len(margins) > 1 else 0.0
+            blowout_wins   = float((margins >= 14).mean())
             blowout_losses = float((margins <= -14).mean())
+
+            # Home/away splits
+            past_home = past[past["team"] == past["home_team"]]
+            past_away = past[past["team"] != past["home_team"]]
+            home_win_rate = float((past_home["point_diff"] > 0).mean()) if not past_home.empty else np.nan
+            away_win_rate = float((past_away["point_diff"] > 0).mean()) if not past_away.empty else np.nan
+            home_avg_margin = float(past_home["point_diff"].mean()) if not past_home.empty else np.nan
+            away_avg_margin = float(past_away["point_diff"].mean()) if not past_away.empty else np.nan
 
             rows.append({
                 "game_id":             row["game_id"],
                 "team":                team,
+                # Existing rolling stats
                 "roll_passing_epa":    past["passing_epa"].mean(),
                 "roll_rushing_epa":    past["rushing_epa"].mean(),
                 "roll_passing_yards":  past["passing_yards"].mean(),
@@ -88,10 +93,15 @@ def build_rolling_stats() -> pd.DataFrame:
                 "roll_def_tfl":        past["def_tackles_for_loss"].mean(),
                 "roll_def_qb_hits":    past["def_qb_hits"].mean(),
                 "roll_def_pass_def":   past["def_pass_defended"].mean(),
+                "roll_turnovers":      (past["passing_interceptions"] + past["rushing_fumbles"] + past["receiving_fumbles"]).mean(),
+                "roll_first_downs":    (past["passing_first_downs"] + past["rushing_first_downs"] + past["receiving_first_downs"]).mean(),
+                "roll_penalty_yards":  past["penalty_yards"].mean(),
+                # Momentum features
                 "roll_avg_margin":     avg_margin,
                 "roll_margin_trend":   margin_trend,
-                "roll_blowout_wins":   blowout_wins,
-                "roll_blowout_losses": blowout_losses
+                "roll_blowout_wins":    blowout_wins,
+                "roll_blowout_losses":  blowout_losses,
+
             })
 
     return pd.DataFrame(rows)

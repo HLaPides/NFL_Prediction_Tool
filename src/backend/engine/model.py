@@ -10,7 +10,6 @@ from data.sql_helpers import get_connection, save
 from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import make_scorer, mean_absolute_error
 
-# ── Constants ─────────────────────────────────────────────────────────────────
 MIN_SEASON = 1999
 
 
@@ -73,7 +72,17 @@ def load_training_data() -> pd.DataFrame:
                 ar.roll_avg_margin     AS away_roll_avg_margin,
                 ar.roll_margin_trend   AS away_roll_margin_trend,
                 ar.roll_blowout_wins   AS away_roll_blowout_wins,
-                ar.roll_blowout_losses AS away_roll_blowout_losses
+                ar.roll_blowout_losses AS away_roll_blowout_losses,
+                         
+                hr.roll_blowout_losses AS home_roll_blowout_losses,
+                hr.roll_turnovers      AS home_roll_turnovers,
+                hr.roll_first_downs    AS home_roll_first_downs,
+                hr.roll_penalty_yards  AS home_roll_penalty_yards,
+
+                ar.roll_blowout_losses AS away_roll_blowout_losses,
+                ar.roll_turnovers      AS away_roll_turnovers,
+                ar.roll_first_downs    AS away_roll_first_downs,
+                ar.roll_penalty_yards  AS away_roll_penalty_yards
                          
             FROM schedules s
             JOIN elo_history h  ON h.game_id = s.game_id AND h.team = s.home_team
@@ -99,6 +108,9 @@ def load_training_data() -> pd.DataFrame:
     df["roll_def_tfl_diff"]    = df["home_roll_def_tfl"]    - df["away_roll_def_tfl"]
     df["roll_avg_margin_diff"]   = df["home_roll_avg_margin"]   - df["away_roll_avg_margin"]
     df["roll_margin_trend_diff"] = df["home_roll_margin_trend"] - df["away_roll_margin_trend"]
+    df["roll_turnovers_diff"]  = df["home_roll_turnovers"]     - df["away_roll_turnovers"]
+    df["roll_first_downs_diff"]= df["home_roll_first_downs"]   - df["away_roll_first_downs"]
+    df["roll_penalty_diff"]    = df["home_roll_penalty_yards"] - df["away_roll_penalty_yards"]
 
     # Derived delta features — model learns from matchup differences
     df["qb_epa_diff"]           = df["home_qb_epa"]          - df["away_qb_epa"]
@@ -106,6 +118,7 @@ def load_training_data() -> pd.DataFrame:
     df["te_yards_diff"]         = df["home_te_yards"]         - df["away_te_yards"]
     df["rb_rush_diff"]          = df["home_rb_rush_yards"]    - df["away_rb_rush_yards"]
     df["rb_rec_diff"]           = df["home_rb_rec_yards"]     - df["away_rb_rec_yards"]
+    
 
     return df
 
@@ -128,6 +141,10 @@ FEATURE_COLS = [
     "home_roll_pass_epa", "away_roll_pass_epa",
     "home_roll_pass_yards", "away_roll_pass_yards",
     "home_roll_rush_yards", "away_roll_rush_yards",
+    "home_roll_turnovers",  "away_roll_turnovers",  
+    "home_roll_first_downs","away_roll_first_downs",
+    "home_roll_penalty_yards", "away_roll_penalty_yards",
+    "roll_turnovers_diff", "roll_first_downs_diff", "roll_penalty_diff"
 ]
 
 
@@ -162,7 +179,6 @@ def tune_hyperparameters(df: pd.DataFrame) -> dict:
     print(f"\nBest params: {search.best_params_}")
     print(f"Best CV MAE: {-search.best_score_:.2f}")
 
-    # Test on 2025
     best = search.best_estimator_
     preds = best.predict(X_test)
     mae = mean_absolute_error(y_test, preds)
@@ -198,14 +214,14 @@ def walk_forward_backtest(df: pd.DataFrame) -> pd.DataFrame:
         X_test  = test[FEATURE_COLS].fillna(0)
 
         model = XGBRegressor(
-            n_estimators=200,
-            max_depth=3,
-            learning_rate=0.01,
-            subsample=0.8,
-            colsample_bytree=1,
-            random_state=42,
-            verbosity=0,
-        )
+                n_estimators=200, 
+                max_depth=3, 
+                learning_rate=0.01,
+                subsample=0.8,
+                colsample_bytree=1.0,
+                verbosity=0,
+                random_state = 10211949
+            )
         model.fit(X_train, y_train)
 
         preds = model.predict(X_test)

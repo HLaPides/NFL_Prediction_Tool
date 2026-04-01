@@ -3,9 +3,12 @@ import pandas as pd
 
 with get_connection() as conn:
     df = pd.read_sql("""
-        SELECT h.season, h.week, h.team, h.opponent, h.elo_before, h.elo_after
-        FROM elo_history h
-        WHERE h.team = 'KC' AND h.season = 2024
-        ORDER BY h.week
+        SELECT passing_interceptions, attempts,
+               rushing_fumbles, receiving_fumbles,
+               passing_first_downs, rushing_first_downs,
+               receiving_first_downs, penalties, penalty_yards
+        FROM team_stats_weekly
+        WHERE season = 2024 AND week = 1
+        LIMIT 3
     """, conn)
-print(df.head(10).to_string())
+print(df.to_string())
