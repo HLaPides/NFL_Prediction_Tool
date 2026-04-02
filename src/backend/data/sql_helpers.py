@@ -315,10 +315,6 @@ def load_upcoming_games(schedules_current: pd.DataFrame) -> pd.DataFrame:
     return upcoming[upcoming["week"] ==next_week].reset_index(drop=True)
     
 def refresh_current_season() -> None:
-    """
-    Updates weekly stats and rosters for the current season.
-    Run once per week during the season.
-    """
     print("Refreshing current season data...")
     save(get_current_weekly_stats(), "weekly_stats", if_exists="replace")
     save(get_current_rosters(),      "rosters",      if_exists="replace")
@@ -326,7 +322,7 @@ def refresh_current_season() -> None:
 
 
 
-#Utility functions. List_tables() lists the 5 tables the db has, table_info prints all the columns of those tables
+#Utility functions. List_tables() lists the tables the db has, table_info prints all the columns of those tables
 
 def list_tables() -> list[str]:
     with get_connection() as conn:

@@ -69,18 +69,10 @@ def build_rolling_stats() -> pd.DataFrame:
             blowout_wins   = float((margins >= 14).mean())
             blowout_losses = float((margins <= -14).mean())
 
-            # Home/away splits
-            past_home = past[past["team"] == past["home_team"]]
-            past_away = past[past["team"] != past["home_team"]]
-            home_win_rate = float((past_home["point_diff"] > 0).mean()) if not past_home.empty else np.nan
-            away_win_rate = float((past_away["point_diff"] > 0).mean()) if not past_away.empty else np.nan
-            home_avg_margin = float(past_home["point_diff"].mean()) if not past_home.empty else np.nan
-            away_avg_margin = float(past_away["point_diff"].mean()) if not past_away.empty else np.nan
 
             rows.append({
                 "game_id":             row["game_id"],
                 "team":                team,
-                # Existing rolling stats
                 "roll_passing_epa":    past["passing_epa"].mean(),
                 "roll_rushing_epa":    past["rushing_epa"].mean(),
                 "roll_passing_yards":  past["passing_yards"].mean(),
@@ -96,7 +88,6 @@ def build_rolling_stats() -> pd.DataFrame:
                 "roll_turnovers":      (past["passing_interceptions"] + past["rushing_fumbles"] + past["receiving_fumbles"]).mean(),
                 "roll_first_downs":    (past["passing_first_downs"] + past["rushing_first_downs"] + past["receiving_first_downs"]).mean(),
                 "roll_penalty_yards":  past["penalty_yards"].mean(),
-                # Momentum features
                 "roll_avg_margin":     avg_margin,
                 "roll_margin_trend":   margin_trend,
                 "roll_blowout_wins":    blowout_wins,

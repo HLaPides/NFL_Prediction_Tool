@@ -17,37 +17,37 @@ MIN_SEASON = 1999
 
 def load_training_data() -> pd.DataFrame:
     """
-    Joins all sources into one flat DataFrame. One row per regular season game.
+    Cleaned training dataset.
+    One row per game.
     Target: result (home team point differential).
     """
+
     with get_connection() as conn:
         df = pd.read_sql("""
             SELECT
                 s.game_id, s.season, s.week,
                 s.home_team, s.away_team,
                 s.result,
+
+                -- Core context
                 COALESCE(s.home_rest, 7) - COALESCE(s.away_rest, 7) AS rest_diff,
-                COALESCE(s.div_game, 0)                              AS div_game,
                 h.elo_before  AS home_elo,
                 a.elo_before  AS away_elo,
-                (h.elo_before - a.elo_before)                        AS elo_diff,
+                (h.elo_before - a.elo_before) AS elo_diff,
                 o.spread_line AS vegas_spread,
+
+                -- Weather (keep only what mattered)
                 CASE WHEN c.roof IN ('dome', 'closed') THEN 1 ELSE 0 END AS is_dome,
-                CASE WHEN CAST(COALESCE(c.temp, 60) AS FLOAT) < 40 THEN 1 ELSE 0 END AS is_cold,
-                CASE WHEN CAST(COALESCE(c.wind, 0)  AS FLOAT) > 15 THEN 1 ELSE 0 END AS high_wind,
-                CASE WHEN CAST(COALESCE(c.wind, 0)  AS FLOAT) > 25 THEN 1 ELSE 0 END AS severe_wind,
-                CASE WHEN c.surface NOT IN ('grass', 'Grass') THEN 1 ELSE 0 END       AS is_turf,
+                CASE WHEN CAST(COALESCE(c.wind, 0) AS FLOAT) > 15 THEN 1 ELSE 0 END AS high_wind,
 
-                 pf.home_qb_epa,          pf.away_qb_epa,
-                pf.home_qb_games,        pf.away_qb_games,
-                pf.home_wr_yards,        pf.away_wr_yards,
-                pf.home_wr_target_share, pf.away_wr_target_share,
-                pf.home_te_yards,        pf.away_te_yards,
-                pf.home_te_target_share, pf.away_te_target_share,
-                pf.home_rb_rush_yards,   pf.away_rb_rush_yards,
-                pf.home_rb_rec_yards,    pf.away_rb_rec_yards,
-                pf.home_rb_carry_share,  pf.away_rb_carry_share,
+                -- Player production (ONLY what we use for diffs)
+                pf.home_qb_epa, pf.away_qb_epa,
+                pf.home_wr_yards, pf.away_wr_yards,
+                pf.home_te_yards, pf.away_te_yards,
+                pf.home_rb_rush_yards, pf.away_rb_rush_yards,
+                pf.home_rb_rec_yards, pf.away_rb_rec_yards,
 
+                -- Rolling stats (needed for diffs)
                 hr.roll_passing_epa    AS home_roll_pass_epa,
                 hr.roll_rushing_epa    AS home_roll_rush_epa,
                 hr.roll_passing_yards  AS home_roll_pass_yards,
@@ -55,6 +55,11 @@ def load_training_data() -> pd.DataFrame:
                 hr.roll_def_sacks      AS home_roll_def_sacks,
                 hr.roll_def_ints       AS home_roll_def_ints,
                 hr.roll_def_tfl        AS home_roll_def_tfl,
+                hr.roll_turnovers      AS home_roll_turnovers,
+                hr.roll_first_downs    AS home_roll_first_downs,
+                hr.roll_penalty_yards  AS home_roll_penalty_yards,
+                hr.roll_avg_margin     AS home_roll_avg_margin,
+                hr.roll_margin_trend   AS home_roll_margin_trend,
 
                 ar.roll_passing_epa    AS away_roll_pass_epa,
                 ar.roll_rushing_epa    AS away_roll_rush_epa,
@@ -63,27 +68,12 @@ def load_training_data() -> pd.DataFrame:
                 ar.roll_def_sacks      AS away_roll_def_sacks,
                 ar.roll_def_ints       AS away_roll_def_ints,
                 ar.roll_def_tfl        AS away_roll_def_tfl,
-                         
-                hr.roll_avg_margin     AS home_roll_avg_margin,
-                hr.roll_margin_trend   AS home_roll_margin_trend,
-                hr.roll_blowout_wins   AS home_roll_blowout_wins,
-                hr.roll_blowout_losses AS home_roll_blowout_losses,
-                         
-                ar.roll_avg_margin     AS away_roll_avg_margin,
-                ar.roll_margin_trend   AS away_roll_margin_trend,
-                ar.roll_blowout_wins   AS away_roll_blowout_wins,
-                ar.roll_blowout_losses AS away_roll_blowout_losses,
-                         
-                hr.roll_blowout_losses AS home_roll_blowout_losses,
-                hr.roll_turnovers      AS home_roll_turnovers,
-                hr.roll_first_downs    AS home_roll_first_downs,
-                hr.roll_penalty_yards  AS home_roll_penalty_yards,
-
-                ar.roll_blowout_losses AS away_roll_blowout_losses,
                 ar.roll_turnovers      AS away_roll_turnovers,
                 ar.roll_first_downs    AS away_roll_first_downs,
-                ar.roll_penalty_yards  AS away_roll_penalty_yards
-                         
+                ar.roll_penalty_yards  AS away_roll_penalty_yards,
+                ar.roll_avg_margin     AS away_roll_avg_margin,
+                ar.roll_margin_trend   AS away_roll_margin_trend
+
             FROM schedules s
             JOIN elo_history h  ON h.game_id = s.game_id AND h.team = s.home_team
             JOIN elo_history a  ON a.game_id = s.game_id AND a.team = s.away_team
@@ -92,59 +82,75 @@ def load_training_data() -> pd.DataFrame:
             LEFT JOIN game_conditions c  ON c.game_id = s.game_id
             LEFT JOIN team_rolling_stats hr ON hr.game_id = s.game_id AND hr.team = s.home_team
             LEFT JOIN team_rolling_stats ar ON ar.game_id = s.game_id AND ar.team = s.away_team
+
             WHERE s.game_type IN ('REG', 'WC', 'DIV', 'CON', 'SB')
-            AND s.result IS NOT NULL
-            AND s.season >= ?
+              AND s.result IS NOT NULL
+              AND s.season >= ?
             ORDER BY s.season, s.week
         """, conn, params=(MIN_SEASON,))
 
-    # Rolling deltas
-    df["roll_pass_epa_diff"]   = df["home_roll_pass_epa"]   - df["away_roll_pass_epa"]
-    df["roll_rush_epa_diff"]   = df["home_roll_rush_epa"]   - df["away_roll_rush_epa"]
+    df["qb_epa_diff"]   = df["home_qb_epa"] - df["away_qb_epa"]
+    df["wr_yards_diff"] = df["home_wr_yards"] - df["away_wr_yards"]
+    df["te_yards_diff"] = df["home_te_yards"] - df["away_te_yards"]
+    df["rb_rush_diff"]  = df["home_rb_rush_yards"] - df["away_rb_rush_yards"]
+    df["rb_rec_diff"]   = df["home_rb_rec_yards"] - df["away_rb_rec_yards"]
+
+    df["roll_pass_epa_diff"]   = df["home_roll_pass_epa"] - df["away_roll_pass_epa"]
+    df["roll_rush_epa_diff"]   = df["home_roll_rush_epa"] - df["away_roll_rush_epa"]
+
     df["roll_pass_yards_diff"] = df["home_roll_pass_yards"] - df["away_roll_pass_yards"]
     df["roll_rush_yards_diff"] = df["home_roll_rush_yards"] - df["away_roll_rush_yards"]
-    df["roll_def_sacks_diff"]  = df["home_roll_def_sacks"]  - df["away_roll_def_sacks"]
-    df["roll_def_ints_diff"]   = df["home_roll_def_ints"]   - df["away_roll_def_ints"]
-    df["roll_def_tfl_diff"]    = df["home_roll_def_tfl"]    - df["away_roll_def_tfl"]
-    df["roll_avg_margin_diff"]   = df["home_roll_avg_margin"]   - df["away_roll_avg_margin"]
-    df["roll_margin_trend_diff"] = df["home_roll_margin_trend"] - df["away_roll_margin_trend"]
-    df["roll_turnovers_diff"]  = df["home_roll_turnovers"]     - df["away_roll_turnovers"]
-    df["roll_first_downs_diff"]= df["home_roll_first_downs"]   - df["away_roll_first_downs"]
+
+    df["roll_def_sacks_diff"]  = df["home_roll_def_sacks"] - df["away_roll_def_sacks"]
+    df["roll_def_ints_diff"]   = df["home_roll_def_ints"] - df["away_roll_def_ints"]
+    df["roll_def_tfl_diff"]    = df["home_roll_def_tfl"] - df["away_roll_def_tfl"]
+
+    df["roll_turnovers_diff"]  = df["home_roll_turnovers"] - df["away_roll_turnovers"]
+    df["roll_first_downs_diff"] = df["home_roll_first_downs"] - df["away_roll_first_downs"]
     df["roll_penalty_diff"]    = df["home_roll_penalty_yards"] - df["away_roll_penalty_yards"]
 
-    # Derived delta features — model learns from matchup differences
-    df["qb_epa_diff"]           = df["home_qb_epa"]          - df["away_qb_epa"]
-    df["wr_yards_diff"]         = df["home_wr_yards"]         - df["away_wr_yards"]
-    df["te_yards_diff"]         = df["home_te_yards"]         - df["away_te_yards"]
-    df["rb_rush_diff"]          = df["home_rb_rush_yards"]    - df["away_rb_rush_yards"]
-    df["rb_rec_diff"]           = df["home_rb_rec_yards"]     - df["away_rb_rec_yards"]
-    
+    df["roll_avg_margin_diff"]   = df["home_roll_avg_margin"] - df["away_roll_avg_margin"]
+    df["roll_margin_trend_diff"] = df["home_roll_margin_trend"] - df["away_roll_margin_trend"]
 
     return df
 
 
-# ── Feature columns ───────────────────────────────────────────────────────────
-
 FEATURE_COLS = [
-    "elo_diff", "home_elo", "away_elo",
+    # Core strength
     "vegas_spread",
-    "rest_diff", "div_game",
-    "is_dome", "is_cold", "high_wind", "severe_wind", "is_turf",
-    "qb_epa_diff", "home_qb_epa", "away_qb_epa",
-    "wr_yards_diff",  "home_wr_yards",  "away_wr_yards",
-    "te_yards_diff",  "home_te_yards",  "away_te_yards",
-    "rb_rush_diff",   "home_rb_rush_yards", "away_rb_rush_yards",
+    "elo_diff",
+
+    # Game context
+    "rest_diff",
+    "is_dome",
+    "high_wind",
+
+    # Player matchup (DIFF only)
+    "qb_epa_diff",
+    "wr_yards_diff",
+    "te_yards_diff",
+    "rb_rush_diff",
     "rb_rec_diff",
-    "roll_pass_epa_diff", "roll_rush_epa_diff",
-    "roll_pass_yards_diff", "roll_rush_yards_diff",
-    "roll_def_sacks_diff", "roll_def_ints_diff", "roll_def_tfl_diff",
-    "home_roll_pass_epa", "away_roll_pass_epa",
-    "home_roll_pass_yards", "away_roll_pass_yards",
-    "home_roll_rush_yards", "away_roll_rush_yards",
-    "home_roll_turnovers",  "away_roll_turnovers",  
-    "home_roll_first_downs","away_roll_first_downs",
-    "home_roll_penalty_yards", "away_roll_penalty_yards",
-    "roll_turnovers_diff", "roll_first_downs_diff", "roll_penalty_diff"
+
+    # Efficiency
+    "roll_pass_epa_diff",
+    "roll_rush_epa_diff",
+
+    # Volume / production
+    "roll_pass_yards_diff",
+    "roll_rush_yards_diff",
+
+    # Defense
+    "roll_def_sacks_diff",
+    "roll_def_ints_diff",
+    "roll_def_tfl_diff",
+
+    # Discipline / mistakes
+    "roll_turnovers_diff",
+    "roll_penalty_diff",
+
+    # Sustaining drives
+    "roll_first_downs_diff",
 ]
 
 
@@ -194,17 +200,14 @@ def tune_hyperparameters(df: pd.DataFrame) -> dict:
 # ── Walk-forward validation ───────────────────────────────────────────────────
 
 def walk_forward_backtest(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    For each season S, trains on all seasons < S and tests on season S.
-    Returns a DataFrame with predictions and value bet flags for every test game.
-    """
+    from sklearn.linear_model import Ridge
     seasons = sorted(df["season"].unique())
     results = []
 
     for i, test_season in enumerate(seasons):
         train_seasons = seasons[:i]
-        if not train_seasons:
-            continue  # need at least one season of training data
+        if len(train_seasons) < 2:
+            continue
 
         train = df[df["season"].isin(train_seasons)]
         test  = df[df["season"] == test_season]
@@ -213,18 +216,45 @@ def walk_forward_backtest(df: pd.DataFrame) -> pd.DataFrame:
         y_train = train["result"]
         X_test  = test[FEATURE_COLS].fillna(0)
 
-        model = XGBRegressor(
-                n_estimators=200, 
-                max_depth=3, 
-                learning_rate=0.01,
-                subsample=0.8,
-                colsample_bytree=1.0,
-                verbosity=0,
-                random_state = 10211949
-            )
-        model.fit(X_train, y_train)
+        #base XGBoost
+        base = XGBRegressor(
+            n_estimators=200, max_depth=3, learning_rate=0.01,
+            subsample=0.8, colsample_bytree=1.0,
+            random_state=42, verbosity=0,
+        )
+        base.fit(X_train, y_train)
 
-        preds = model.predict(X_test)
+        #predictions for meta model
+        mid = len(train) // 2
+        train_a = train.iloc[:mid]
+        train_b = train.iloc[mid:]
+
+        base_a = XGBRegressor(
+            n_estimators=200, max_depth=3, learning_rate=0.01,
+            subsample=0.8, colsample_bytree=1.0,
+            random_state=42, verbosity=0,
+        )
+        base_a.fit(train_a[FEATURE_COLS].fillna(0), train_a["result"])
+        oof_preds = base_a.predict(train_b[FEATURE_COLS].fillna(0))
+
+        # meta Ridge regression
+        meta_train_X = np.column_stack([
+            oof_preds,
+            train_b["vegas_spread"].fillna(0).values,
+            train_b["elo_diff"].fillna(0).values,
+        ])
+        meta_train_y = train_b["result"].values
+
+        meta = Ridge(alpha=1.0)
+        meta.fit(meta_train_X, meta_train_y)
+
+        base_test_preds = base.predict(X_test)
+        meta_test_X = np.column_stack([
+            base_test_preds,
+            test["vegas_spread"].fillna(0).values,
+            test["elo_diff"].fillna(0).values,
+        ])
+        preds = meta.predict(meta_test_X)
 
         season_df = test[["game_id", "season", "week", "home_team", "away_team",
                            "result", "vegas_spread"]].copy()
@@ -292,10 +322,11 @@ if __name__ == "__main__":
     save(results, "model_predictions")
     print("Done.")
 
-    """
+
+"""
     print("Loading training data...")
     df = load_training_data()
 
     print("Tuning hyperparameters...")
     best_params = tune_hyperparameters(df)
-    """
+"""
