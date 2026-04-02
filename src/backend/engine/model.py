@@ -117,7 +117,6 @@ def load_training_data() -> pd.DataFrame:
 
 FEATURE_COLS = [
     # Core strength
-    "vegas_spread",
     "elo_diff",
 
     # Game context
