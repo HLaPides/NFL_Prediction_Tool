@@ -11,7 +11,6 @@ ROLLING_WEEKS = 4
 
 def build_rolling_stats() -> pd.DataFrame:
     with get_connection() as conn:
-        # Team stats with game_id joined from schedules
         stats = pd.read_sql("""
             SELECT
                 t.season, t.week, t.team,
@@ -28,17 +27,18 @@ def build_rolling_stats() -> pd.DataFrame:
                 t.penalties, t.penalty_yards,
                 t.def_sacks, t.def_interceptions,
                 t.def_fumbles_forced, t.def_tackles_for_loss,
-                t.def_qb_hits, t.def_pass_defended
+                t.def_qb_hits, t.def_pass_defended,
+                CASE WHEN s.home_team = t.team THEN p.home_coach
+                     ELSE p.away_coach END AS coach
             FROM team_stats_weekly t
             JOIN schedules s
                 ON s.season = t.season
                 AND s.week   = t.week
                 AND (s.home_team = t.team OR s.away_team = t.team)
+            LEFT JOIN game_personnel p ON p.game_id = s.game_id
             WHERE t.season_type IN ('REG', 'POST')
             ORDER BY t.season, t.week
         """, conn)
-
-        # Load ELO history for SOS calculation — removed, redundant with ELO diff
 
     # Compute point differential from each team's perspective
     stats["point_diff"] = np.where(
@@ -46,6 +46,10 @@ def build_rolling_stats() -> pd.DataFrame:
         stats["home_score"] - stats["away_score"],
         stats["away_score"] - stats["home_score"]
     )
+
+    # Build coach win history for fast lookup
+    stats["won"] = (stats["point_diff"] > 0).astype(int)
+    coach_history = stats[["season", "week", "team", "coach", "won"]].copy()
 
     rows = []
 
@@ -59,6 +63,21 @@ def build_rolling_stats() -> pd.DataFrame:
             ].tail(ROLLING_WEEKS)
 
             if past.empty:
+                # Consecutive win/loss streak
+                wins_losses = (past["point_diff"] > 0).astype(int).values
+                streak = 0
+            for result in reversed(wins_losses):
+                if result == 1:
+                    if streak >= 0:
+                        streak += 1
+                    else:
+                        break
+                else:
+                    if streak <= 0:
+                        streak -= 1
+                    else:
+                        break
+
                 rows.append({"game_id": row["game_id"], "team": team})
                 continue
 
@@ -69,6 +88,20 @@ def build_rolling_stats() -> pd.DataFrame:
             blowout_wins   = float((margins >= 14).mean())
             blowout_losses = float((margins <= -14).mean())
 
+            # Coach win rate — last 10 games for this coach
+            current_coach = row.get("coach")
+            if current_coach and not pd.isna(current_coach):
+                coach_past = coach_history[
+                    (coach_history["coach"] == current_coach) &
+                    ((coach_history["season"] < row["season"]) |
+                     ((coach_history["season"] == row["season"]) &
+                      (coach_history["week"]   <  row["week"])))
+                ].tail(10)
+                coach_win_rate = float(coach_past["won"].mean()) if not coach_past.empty else np.nan
+                coach_games    = len(coach_past)
+            else:
+                coach_win_rate = np.nan
+                coach_games    = 0
 
             rows.append({
                 "game_id":             row["game_id"],
@@ -90,9 +123,11 @@ def build_rolling_stats() -> pd.DataFrame:
                 "roll_penalty_yards":  past["penalty_yards"].mean(),
                 "roll_avg_margin":     avg_margin,
                 "roll_margin_trend":   margin_trend,
-                "roll_blowout_wins":    blowout_wins,
-                "roll_blowout_losses":  blowout_losses,
-
+                "roll_blowout_wins":   blowout_wins,
+                "roll_blowout_losses": blowout_losses,
+                "roll_streak":         streak,
+                "roll_coach_win_rate": coach_win_rate,
+                "roll_coach_games":    coach_games,
             })
 
     return pd.DataFrame(rows)
