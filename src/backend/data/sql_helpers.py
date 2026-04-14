@@ -31,6 +31,8 @@ PERSONNEL_COLS = [
     "away_coach", "home_coach", "referee"
 ]
 
+DEAD_FRANCHISES = {"OAK", "SD", "STL"}
+
 
 #Gets connection to sql database
 
@@ -120,9 +122,9 @@ def load_team_games(team: str) -> pd.DataFrame:
 def load_elo_history() -> pd.DataFrame:
     with get_connection() as conn:
         return pd.read_sql("SELECT * FROM elo_history ORDER BY season, week", conn)
-    
+
 def load_current_elo_ratings() -> dict[str, float]:
-   with get_connection() as conn:
+    with get_connection() as conn:
         df = pd.read_sql("""
             SELECT h.team, h.elo_after
             FROM elo_history h
@@ -134,7 +136,8 @@ def load_current_elo_ratings() -> dict[str, float]:
             ON h.team = latest.team
             AND (h.season * 100 + h.week) = latest.max_key
         """, conn)
-        return dict(zip(df["team"], df["elo_after"]))
+    df = df[~df["team"].isin(DEAD_FRANCHISES)]
+    return dict(zip(df["team"], df["elo_after"]))
    
 def load_depth_charts(starters_only: bool = True) -> pd.DataFrame:
     with get_connection() as conn:
