@@ -12,10 +12,80 @@ from data.sql_helpers import get_connection, save
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 MIN_SEASON        = 1999
+INJURY_MIN_SEASON = 2015
 EDGE_THRESHOLD    = 2.5
 MIN_TRAIN_SEASONS = 5
 UNIT_BET          = 100
 ODDS              = -110
+
+POSITION_WEIGHTS = {
+    'QB': 10.0,
+    'WR':  2.0, 'RB':  2.0, 'TE': 1.5,
+    'T':   1.0, 'G':   0.5, 'C':  0.5,
+    'CB':  1.0, 'S':   1.0, 'LB': 0.8,
+    'DE':  0.8, 'DT':  0.5,
+}
+
+STATUS_SEVERITY = {
+    'Out':          1.00,
+    'Doubtful':     0.75,
+    'Questionable': 0.25,
+    'Probable':     0.05,
+    'Note':         0.00,
+    None:           0.00,
+}
+
+
+# ── Injury feature builder ────────────────────────────────────────────────────
+def build_injury_features() -> pd.DataFrame:
+    with get_connection() as conn:
+        inj = pd.read_sql("""
+            SELECT season, week, team, position, report_status, full_name
+            FROM injuries_historical
+            WHERE season >= ?
+              AND position IN ('QB','WR','RB','TE','T','G','C','CB','S','LB','DE','DT')
+        """, conn, params=(INJURY_MIN_SEASON,))
+
+        games = pd.read_sql("""
+            SELECT game_id, season, week, home_team, away_team
+            FROM schedules
+            WHERE game_type IN ('REG','WC','DIV','CON','SB')
+              AND season >= ?
+        """, conn, params=(INJURY_MIN_SEASON,))
+
+    inj["pos_weight"] = inj["position"].map(POSITION_WEIGHTS).fillna(0.5)
+    inj["severity"]   = inj["report_status"].map(STATUS_SEVERITY).fillna(0.0)
+    inj["inj_score"]  = inj["pos_weight"] * inj["severity"]
+
+    team_inj = (inj.groupby(["season", "week", "team"])["inj_score"]
+                   .sum().reset_index()
+                   .rename(columns={"inj_score": "injury_score"}))
+
+    qb_inj = inj[inj["position"] == "QB"].copy()
+    qb_inj["qb_out"] = qb_inj["report_status"].isin(["Out", "Doubtful"]).astype(int)
+    qb_team = (qb_inj.groupby(["season", "week", "team"])["qb_out"]
+                      .max().reset_index())
+
+    team_inj = team_inj.merge(qb_team, on=["season", "week", "team"], how="left")
+    team_inj["qb_out"] = team_inj["qb_out"].fillna(0)
+
+    games = games.merge(
+        team_inj.rename(columns={"team": "home_team", "injury_score": "home_injury_score", "qb_out": "home_qb_out"}),
+        on=["season", "week", "home_team"], how="left"
+    )
+    games = games.merge(
+        team_inj.rename(columns={"team": "away_team", "injury_score": "away_injury_score", "qb_out": "away_qb_out"}),
+        on=["season", "week", "away_team"], how="left"
+    )
+
+    for col in ["home_injury_score", "away_injury_score", "home_qb_out", "away_qb_out"]:
+        games[col] = games[col].fillna(0)
+
+    games["injury_score_diff"] = games["home_injury_score"] - games["away_injury_score"]
+    games["qb_out_diff"]       = games["away_qb_out"] - games["home_qb_out"]
+
+    return games[["game_id", "home_injury_score", "away_injury_score",
+                   "injury_score_diff", "home_qb_out", "away_qb_out", "qb_out_diff"]]
 
 
 # ── Data loading ──────────────────────────────────────────────────────────────
@@ -26,6 +96,7 @@ def load_training_data() -> pd.DataFrame:
                 s.game_id, s.season, s.week,
                 s.home_team, s.away_team,
                 s.result,
+                s.div_game,
                 COALESCE(s.home_rest, 7) - COALESCE(s.away_rest, 7) AS rest_diff,
                 h.elo_before  AS home_elo,
                 a.elo_before  AS away_elo,
@@ -76,23 +147,30 @@ def load_training_data() -> pd.DataFrame:
             ORDER BY s.season, s.week
         """, conn, params=(MIN_SEASON,))
 
-    df["qb_epa_diff"]           = df["home_qb_epa"]           - df["away_qb_epa"]
-    df["wr_yards_diff"]         = df["home_wr_yards"]          - df["away_wr_yards"]
-    df["te_yards_diff"]         = df["home_te_yards"]          - df["away_te_yards"]
-    df["rb_rush_diff"]          = df["home_rb_rush_yards"]     - df["away_rb_rush_yards"]
-    df["rb_rec_diff"]           = df["home_rb_rec_yards"]      - df["away_rb_rec_yards"]
-    df["roll_pass_epa_diff"]    = df["home_roll_pass_epa"]     - df["away_roll_pass_epa"]
-    df["roll_rush_epa_diff"]    = df["home_roll_rush_epa"]     - df["away_roll_rush_epa"]
-    df["roll_pass_yards_diff"]  = df["home_roll_pass_yards"]   - df["away_roll_pass_yards"]
-    df["roll_rush_yards_diff"]  = df["home_roll_rush_yards"]   - df["away_roll_rush_yards"]
-    df["roll_def_sacks_diff"]   = df["home_roll_def_sacks"]    - df["away_roll_def_sacks"]
-    df["roll_def_ints_diff"]    = df["home_roll_def_ints"]     - df["away_roll_def_ints"]
-    df["roll_def_tfl_diff"]     = df["home_roll_def_tfl"]      - df["away_roll_def_tfl"]
-    df["roll_turnovers_diff"]   = df["home_roll_turnovers"]    - df["away_roll_turnovers"]
-    df["roll_first_downs_diff"] = df["home_roll_first_downs"]  - df["away_roll_first_downs"]
-    df["roll_penalty_diff"]     = df["home_roll_penalty_yards"]- df["away_roll_penalty_yards"]
-    df["roll_avg_margin_diff"]  = df["home_roll_avg_margin"]   - df["away_roll_avg_margin"]
-    df["roll_margin_trend_diff"]= df["home_roll_margin_trend"] - df["away_roll_margin_trend"]
+    df["qb_epa_diff"]           = df["home_qb_epa"]            - df["away_qb_epa"]
+    df["wr_yards_diff"]         = df["home_wr_yards"]           - df["away_wr_yards"]
+    df["te_yards_diff"]         = df["home_te_yards"]           - df["away_te_yards"]
+    df["rb_rush_diff"]          = df["home_rb_rush_yards"]      - df["away_rb_rush_yards"]
+    df["rb_rec_diff"]           = df["home_rb_rec_yards"]       - df["away_rb_rec_yards"]
+    df["roll_pass_epa_diff"]    = df["home_roll_pass_epa"]      - df["away_roll_pass_epa"]
+    df["roll_rush_epa_diff"]    = df["home_roll_rush_epa"]      - df["away_roll_rush_epa"]
+    df["roll_pass_yards_diff"]  = df["home_roll_pass_yards"]    - df["away_roll_pass_yards"]
+    df["roll_rush_yards_diff"]  = df["home_roll_rush_yards"]    - df["away_roll_rush_yards"]
+    df["roll_def_sacks_diff"]   = df["home_roll_def_sacks"]     - df["away_roll_def_sacks"]
+    df["roll_def_ints_diff"]    = df["home_roll_def_ints"]      - df["away_roll_def_ints"]
+    df["roll_def_tfl_diff"]     = df["home_roll_def_tfl"]       - df["away_roll_def_tfl"]
+    df["roll_turnovers_diff"]   = df["home_roll_turnovers"]     - df["away_roll_turnovers"]
+    df["roll_first_downs_diff"] = df["home_roll_first_downs"]   - df["away_roll_first_downs"]
+    df["roll_penalty_diff"]     = df["home_roll_penalty_yards"] - df["away_roll_penalty_yards"]
+    df["roll_avg_margin_diff"]  = df["home_roll_avg_margin"]    - df["away_roll_avg_margin"]
+    df["roll_margin_trend_diff"]= df["home_roll_margin_trend"]  - df["away_roll_margin_trend"]
+
+    # Merge injury features (2015+, zero-filled earlier)
+    inj = build_injury_features()
+    df  = df.merge(inj, on="game_id", how="left")
+    for col in ["home_injury_score", "away_injury_score",
+                "injury_score_diff", "home_qb_out", "away_qb_out", "qb_out_diff"]:
+        df[col] = df[col].fillna(0)
 
     return df
 
@@ -118,6 +196,10 @@ FEATURE_COLS = [
     "roll_turnovers_diff",
     "roll_penalty_diff",
     "roll_first_downs_diff",
+    "injury_score_diff",
+    "qb_out_diff",
+    "home_qb_out",
+    "away_qb_out",
 ]
 
 
@@ -131,7 +213,6 @@ def _make_base() -> XGBRegressor:
 
 
 def _stack(train: pd.DataFrame, test: pd.DataFrame) -> np.ndarray:
-    """Fits stacking model on train, returns predictions for test."""
     X_train = train[FEATURE_COLS].fillna(0)
     y_train = train["result"]
     X_test  = test[FEATURE_COLS].fillna(0)
@@ -165,23 +246,16 @@ def _stack(train: pd.DataFrame, test: pd.DataFrame) -> np.ndarray:
 
 # ── Walk-forward backtest ─────────────────────────────────────────────────────
 def _bootstrap_confidence(train: pd.DataFrame, test: pd.DataFrame,
-                          n_boots: int = 50) -> np.ndarray:
-    """
-    Returns prediction std dev for each test game across n_boots models
-    trained on random bootstrap samples of train data.
-    Low std = model is confident. High std = features are mixed signals.
-    """
+                          n_boots: int = 10) -> np.ndarray:
     preds = []
     rng   = np.random.default_rng(42)
-
     for _ in range(n_boots):
         idx    = rng.integers(0, len(train), size=len(train))
         sample = train.iloc[idx]
         m      = _make_base()
         m.fit(sample[FEATURE_COLS].fillna(0), sample["result"])
         preds.append(m.predict(test[FEATURE_COLS].fillna(0)))
-
-    return np.std(preds, axis=0)   # one std dev per test game
+    return np.std(preds, axis=0)
 
 
 def walk_forward_backtest(df: pd.DataFrame) -> pd.DataFrame:
@@ -199,10 +273,10 @@ def walk_forward_backtest(df: pd.DataFrame) -> pd.DataFrame:
         confidence = _bootstrap_confidence(train, test)
 
         s = test[["game_id", "season", "week", "home_team", "away_team",
-                   "result", "vegas_spread"]].copy()
+                   "result", "vegas_spread", "div_game"]].copy()
         s["model_spread"]  = preds.round(1)
         s["spread_gap"]    = (s["model_spread"] - s["vegas_spread"]).round(1)
-        s["confidence"]    = confidence.round(2)   # std dev — lower = more confident
+        s["confidence"]    = confidence.round(2)
         s["model_winner"]  = np.where(s["model_spread"] > 0, s["home_team"], s["away_team"])
         s["vegas_winner"]  = np.where(s["vegas_spread"] > 0, s["home_team"], s["away_team"])
         s["actual_winner"] = np.where(s["result"] > 0,       s["home_team"], s["away_team"])
@@ -213,15 +287,10 @@ def walk_forward_backtest(df: pd.DataFrame) -> pd.DataFrame:
 
 # ── Edge calculation ──────────────────────────────────────────────────────────
 def calculate_edges(df: pd.DataFrame,
-                    threshold: float  = EDGE_THRESHOLD,
-                    max_std:   float  = None) -> pd.DataFrame:
-    """
-    Flags value bets. Two modes:
-      - gap only (default): spread_gap >= threshold
-      - confidence filter:  spread_gap >= threshold AND confidence std <= max_std
-    If max_std is set, threshold can be lower since confidence filters noise.
-    """
+                    threshold: float = EDGE_THRESHOLD,
+                    max_std:   float = None) -> pd.DataFrame:
     df = df[df["season"] >= df["season"].min() + MIN_TRAIN_SEASONS].copy()
+    df = df[~df["week"].isin([17, 18])]
     agrees    = (
         ((df["model_spread"] > 0) & (df["vegas_spread"] > 0)) |
         ((df["model_spread"] < 0) & (df["vegas_spread"] < 0))
@@ -235,6 +304,26 @@ def calculate_edges(df: pd.DataFrame,
                              e["result"] < e["vegas_spread"])
     e["payout"]   = np.where(e["ats_win"], UNIT_BET * (100 / abs(ODDS)), -UNIT_BET)
     return e
+
+
+def apply_sharp_filter(edges: pd.DataFrame) -> pd.DataFrame:
+    """
+    Post-filter: only keep bets where sharp money agrees with model direction.
+    Games with no line movement data pass through unfiltered.
+    """
+    with get_connection() as conn:
+        lm = pd.read_sql("""
+            SELECT game_id, spread_move, sharp_home, sharp_away
+            FROM line_movement
+        """, conn)
+
+    e = edges.merge(lm, on="game_id", how="left")
+    no_data      = e["spread_move"].isna()
+    sharp_agrees = (
+        (e["bet_home"] & (e["sharp_home"] == 1)) |
+        (~e["bet_home"] & (e["sharp_away"] == 1))
+    )
+    return e[no_data | sharp_agrees].copy()
 
 
 # ── Reporting ─────────────────────────────────────────────────────────────────
@@ -259,9 +348,13 @@ def print_report(df: pd.DataFrame) -> None:
           f"{(total_correct-total_vegas)/total_games*100:>+8.1f}%")
 
 
-def print_edge_report(df_edges: pd.DataFrame, df_full: pd.DataFrame) -> None:
+def print_edge_report(df_edges: pd.DataFrame, label: str = "Edges") -> None:
+    if df_edges.empty:
+        print("No edges found.")
+        return
     seasons = sorted(df_edges["season"].unique())
     print(f"\n{'='*70}")
+    print(f"{label}")
     print(f"{'Season':<8} {'Bets':>6} {'ATS Win%':>10} {'ROI($)':>10} {'ROI%':>8}")
     print(f"{'='*70}")
     total_bets = total_wins = total_roi = 0
@@ -280,30 +373,45 @@ def print_edge_report(df_edges: pd.DataFrame, df_full: pd.DataFrame) -> None:
     tw  = total_wins / total_bets * 100 if total_bets else 0
     print(f"{'All-time':<8} {total_bets:>6} {tw:>10.1f}% "
           f"{total_roi:>10.0f} {total_roi/(total_bets*UNIT_BET)*100:>7.1f}%")
-    print(f"\nBreak-even ATS%: 52.4%")
-    print(f"Model edge:      {tw-52.4:+.1f}%")
-    print(f"Profitable:      {'YES' if tw > 52.4 else 'NO'}")
-    print(f"\nThreshold sensitivity:")
-    print(f"{'Threshold':>10} {'Bets':>6} {'ATS%':>8} {'ROI($)':>10}")
-    for t in [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0]:
-        sub = calculate_edges(df_full, threshold=t)
-        if len(sub) == 0:
-            continue
-        print(f"{t:>10.1f} {len(sub):>6} {sub['ats_win'].mean()*100:>7.1f}% {sub['payout'].sum():>10.0f}")
+    print(f"\nBreak-even ATS%: 52.4%  |  Model: {tw:.1f}%  |  "
+          f"Edge: {tw-52.4:+.1f}%  |  {'PROFITABLE' if tw > 52.4 else 'NOT PROFITABLE'}")
+
+
+def print_stacked_filter_report(results: pd.DataFrame) -> None:
+    print(f"\n{'='*75}")
+    print("Stacked filter sensitivity")
+    print(f"{'Thresh':>7} {'Sharp':>6} {'No Div':>7} {'Bets':>6} {'ATS%':>8} {'ROI($)':>10}")
+    print(f"{'='*75}")
+
+    for threshold in [2.0, 2.5, 3.0, 3.5, 4.0]:
+        for use_sharp in [False, True]:
+            for no_div in [False, True]:
+                edges = calculate_edges(results, threshold=threshold)
+                if use_sharp:
+                    edges = apply_sharp_filter(edges)
+                if no_div and "div_game" in edges.columns:
+                    edges = edges[edges["div_game"] == 0]
+                if len(edges) < 3:
+                    continue
+                ats = edges["ats_win"].mean() * 100
+                roi = edges["payout"].sum()
+                print(f"{threshold:>7.1f} {'Y' if use_sharp else 'N':>6} "
+                      f"{'Y' if no_div else 'N':>7} {len(edges):>6} "
+                      f"{ats:>7.1f}% {roi:>10.0f}")
 
 
 # ── Train & save final model ──────────────────────────────────────────────────
 def train_final_model(df: pd.DataFrame) -> tuple:
-    X, y    = df[FEATURE_COLS].fillna(0), df["result"]
-    base    = _make_base()
+    X, y   = df[FEATURE_COLS].fillna(0), df["result"]
+    base   = _make_base()
     base.fit(X, y)
 
-    mid     = len(df) // 2
-    base_a  = _make_base()
+    mid    = len(df) // 2
+    base_a = _make_base()
     base_a.fit(df.iloc[:mid][FEATURE_COLS].fillna(0), df.iloc[:mid]["result"])
-    oof     = base_a.predict(df.iloc[mid:][FEATURE_COLS].fillna(0))
+    oof    = base_a.predict(df.iloc[mid:][FEATURE_COLS].fillna(0))
 
-    meta    = Ridge(alpha=1.0)
+    meta   = Ridge(alpha=1.0)
     meta.fit(
         np.column_stack([oof,
                          df.iloc[mid:]["vegas_spread"].fillna(0).values,
@@ -331,7 +439,6 @@ def load_trained_model() -> tuple:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-
     print("Loading training data...")
     df = load_training_data()
     print(f"Loaded {len(df)} games ({df['season'].min()}–{df['season'].max()})")
@@ -344,20 +451,16 @@ if __name__ == "__main__":
     results = walk_forward_backtest(df)
     print_report(results)
 
-    print(results["confidence"].describe())
-    print(results["confidence"].quantile([0.1, 0.25, 0.5, 0.75, 0.9]))
-
-    print("\nCalculating edges...")
+    print("\nBase edges (no filters):")
     df_edges = calculate_edges(results)
-    print_edge_report(df_edges, results)
+    print_edge_report(df_edges, label="Base edges (threshold=2.5, no sharp filter)")
 
-    print("\nConfidence filter sensitivity (gap >= 1.5, varying max_std):")
-    print(f"{'Max Std':>8} {'Bets':>6} {'ATS%':>8} {'ROI($)':>10}")
-    for std in [3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]:
-        sub = calculate_edges(results, threshold=1.5, max_std=std)
-        if len(sub) == 0:
-            continue
-        print(f"{std:>8.1f} {len(sub):>6} {sub['ats_win'].mean()*100:>7.1f}% {sub['payout'].sum():>10.0f}")
+    print("\nSharp-filtered edges:")
+    df_sharp = apply_sharp_filter(df_edges)
+    print_edge_report(df_sharp, label="Sharp-filtered edges (threshold=2.5 + sharp agrees)")
+
+    print("\nStacked filter analysis:")
+    print_stacked_filter_report(results)
 
     print("\nSaving predictions to model_predictions table...")
     save(results, "model_predictions")

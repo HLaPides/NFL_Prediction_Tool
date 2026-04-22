@@ -6,7 +6,7 @@ import pandas as pd
 import nflreadpy as nfl
 from nflreadpy.utils_date import get_current_season
 from data.sql_helpers import save, get_connection, merge_season_into_historical, load_upcoming_games
-from data.depth_chart_getter import get_all_depth_charts
+from backend.data.depth_chart_getter import get_all_depth_charts
 from data.injury_getter import fetch_injuries
 from engine.elo_analyzer import elo_analyzer
 from engine.model import load_training_data, train_final_model
