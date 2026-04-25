@@ -6,8 +6,6 @@ import pickle
 import pandas as pd
 import numpy as np
 from xgboost import XGBRegressor
-from sklearn.metrics import mean_absolute_error
-from sklearn.model_selection import KFold
 from data.sql_helpers import get_connection, save
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -17,16 +15,6 @@ ROLL_WINDOW       = 4       # rolling average window in games
 MIN_TRAIN_SEASONS = 4
 STAT_TARGETS      = ["receiving_yards", "receiving_tds", "receptions", "targets"]
 
-# Hyperparameter search space
-PARAM_GRID = [
-    {"n_estimators": 100, "max_depth": 3, "learning_rate": 0.05, "subsample": 0.8, "colsample_bytree": 0.8},
-    {"n_estimators": 200, "max_depth": 3, "learning_rate": 0.02, "subsample": 0.8, "colsample_bytree": 0.8},
-    {"n_estimators": 300, "max_depth": 3, "learning_rate": 0.01, "subsample": 0.8, "colsample_bytree": 0.8},
-    {"n_estimators": 200, "max_depth": 4, "learning_rate": 0.02, "subsample": 0.8, "colsample_bytree": 0.8},
-    {"n_estimators": 200, "max_depth": 3, "learning_rate": 0.02, "subsample": 0.7, "colsample_bytree": 0.7},
-    {"n_estimators": 200, "max_depth": 3, "learning_rate": 0.02, "subsample": 0.9, "colsample_bytree": 1.0},
-    {"n_estimators": 400, "max_depth": 2, "learning_rate": 0.01, "subsample": 0.8, "colsample_bytree": 0.8},
-]
 
 
 # ── Data loading ──────────────────────────────────────────────────────────────
@@ -187,31 +175,6 @@ FEATURE_COLS = [
 ]
 
 
-# ── Hyperparameter tuning ─────────────────────────────────────────────────────
-def tune_hyperparameters(df: pd.DataFrame, target: str, n_folds: int = 5) -> dict:
-    clean = df.dropna(subset=FEATURE_COLS + [target])
-    X     = clean[FEATURE_COLS].values
-    y     = clean[target].values
-    kf    = KFold(n_splits=n_folds, shuffle=True, random_state=42)
-
-    best_params = None
-    best_mae    = float("inf")
-
-    print(f"  Tuning {target} ({len(PARAM_GRID)} configs × {n_folds} folds)...")
-    for params in PARAM_GRID:
-        fold_maes = []
-        for train_idx, val_idx in kf.split(X):
-            m = XGBRegressor(**params, random_state=42, verbosity=0)
-            m.fit(X[train_idx], y[train_idx])
-            preds = m.predict(X[val_idx])
-            fold_maes.append(mean_absolute_error(y[val_idx], preds))
-        avg_mae = np.mean(fold_maes)
-        if avg_mae < best_mae:
-            best_mae    = avg_mae
-            best_params = params
-
-    print(f"    Best MAE: {best_mae:.2f}  →  {best_params}")
-    return best_params
 
 
 # ── Walk-forward backtest ─────────────────────────────────────────────────────
@@ -411,72 +374,3 @@ def predict_current_week(models: dict) -> pd.DataFrame:
         pred_df[f"pred_{stat}"] = model.predict(feat).round(1)
 
     return pred_df
-
-
-# ── Reporting ─────────────────────────────────────────────────────────────────
-def print_accuracy_report(results: pd.DataFrame, target: str) -> None:
-    seasons = sorted(results["season"].unique())
-
-    is_counting = target in ["receiving_tds"]
-    if is_counting:
-        t1, t2, l1, l2 = 0.5, 1.0, "Exact±0.5", "Within 1"
-    else:
-        t1, t2, l1, l2 = 15, 30, "Within 15", "Within 30"
-
-    print(f"\n{'='*60}")
-    print(f"WR {target} prediction accuracy")
-    print(f"{'Season':<8} {'Games':>6} {'MAE':>8} {l1:>12} {l2:>12}")
-    print(f"{'='*60}")
-    total_games = total_mae = w1 = w2 = 0
-    for season in seasons:
-        s    = results[results["season"] == season]
-        mae  = s["error"].mean()
-        p1   = (s["error"] <= t1).mean() * 100
-        p2   = (s["error"] <= t2).mean() * 100
-        total_games += len(s)
-        total_mae   += s["error"].sum()
-        w1          += (s["error"] <= t1).sum()
-        w2          += (s["error"] <= t2).sum()
-        print(f"{season:<8} {len(s):>6} {mae:>8.2f} {p1:>11.1f}% {p2:>11.1f}%")
-    print(f"{'='*60}")
-    print(f"{'All-time':<8} {total_games:>6} {total_mae/total_games:>8.2f} "
-          f"{w1/total_games*100:>11.1f}% {w2/total_games*100:>11.1f}%")
-
-
-# ── Main ──────────────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    print("Loading WR data...")
-    df = load_wr_data()
-    print(f"Loaded {len(df)} WR game logs ({df['season'].min()}–{df['season'].max()})")
-
-    print("\nNaN counts per feature:")
-    print(df[FEATURE_COLS].isna().sum())
-
-    print("\nTuning hyperparameters and running backtests...")
-    best_params = {}
-    models = {}
-    for target in STAT_TARGETS:
-        bp = tune_hyperparameters(df, target=target)
-        best_params[target] = bp
-        results = walk_forward_backtest(df, target=target, params=bp)
-        print_accuracy_report(results, target)
-        print(f"  Training final {target} model...")
-        models[target] = train_final_model(df, target=target, params=bp)
-
-    print("\nBest params summary:")
-    for t, p in best_params.items():
-        print(f"  {t}: {p}")
-
-    print("\nPredicting current week...")
-    preds = predict_current_week(models)
-    if not preds.empty:
-        print(preds[["player_name", "team", "opponent",
-                      "pred_receiving_yards", "pred_receiving_tds",
-                      "pred_receptions", "pred_targets"]].to_string(index=False))
-    else:
-        print("No upcoming games found — run weekly_update.py first.")
-
-    print("\nSaving WR prop predictions to DB...")
-    if not preds.empty:
-        save(preds, "wr_prop_predictions")
-    print("Done.")
