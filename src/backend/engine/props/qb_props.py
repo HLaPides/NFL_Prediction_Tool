@@ -1,12 +1,13 @@
 import sys
 from pathlib import Path
-sys.path.append(str(Path(__file__).resolve().parents[1]))
+sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 import pickle
 import pandas as pd
 import numpy as np
 from xgboost import XGBRegressor
 from sklearn.metrics import mean_absolute_error
+from sklearn.model_selection import KFold
 from data.sql_helpers import get_connection, save
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -16,6 +17,17 @@ ROLL_WINDOW       = 4       # rolling average window in games
 MIN_TRAIN_SEASONS = 4
 STAT_TARGETS      = ["passing_yards", "passing_tds", "attempts", "completions",
                      "passing_interceptions"]
+
+# Hyperparameter search space
+PARAM_GRID = [
+    {"n_estimators": 100, "max_depth": 3, "learning_rate": 0.05, "subsample": 0.8, "colsample_bytree": 0.8},
+    {"n_estimators": 200, "max_depth": 3, "learning_rate": 0.02, "subsample": 0.8, "colsample_bytree": 0.8},
+    {"n_estimators": 300, "max_depth": 3, "learning_rate": 0.01, "subsample": 0.8, "colsample_bytree": 0.8},
+    {"n_estimators": 200, "max_depth": 4, "learning_rate": 0.02, "subsample": 0.8, "colsample_bytree": 0.8},
+    {"n_estimators": 200, "max_depth": 3, "learning_rate": 0.02, "subsample": 0.7, "colsample_bytree": 0.7},
+    {"n_estimators": 200, "max_depth": 3, "learning_rate": 0.02, "subsample": 0.9, "colsample_bytree": 1.0},
+    {"n_estimators": 400, "max_depth": 2, "learning_rate": 0.01, "subsample": 0.8, "colsample_bytree": 0.8},
+]
 
 
 # ── Data loading ──────────────────────────────────────────────────────────────
@@ -178,9 +190,44 @@ FEATURE_COLS = [
 ]
 
 
+# ── Hyperparameter tuning ─────────────────────────────────────────────────────
+def tune_hyperparameters(df: pd.DataFrame, target: str, n_folds: int = 5) -> dict:
+    """
+    Grid search over PARAM_GRID using k-fold cross-validation.
+    Returns the best parameter set for the given target stat.
+    """
+    clean = df.dropna(subset=FEATURE_COLS + [target])
+    X     = clean[FEATURE_COLS].values
+    y     = clean[target].values
+    kf    = KFold(n_splits=n_folds, shuffle=True, random_state=42)
+
+    best_params = None
+    best_mae    = float("inf")
+
+    print(f"  Tuning {target} ({len(PARAM_GRID)} configs × {n_folds} folds)...")
+    for params in PARAM_GRID:
+        fold_maes = []
+        for train_idx, val_idx in kf.split(X):
+            m = XGBRegressor(**params, random_state=42, verbosity=0)
+            m.fit(X[train_idx], y[train_idx])
+            preds = m.predict(X[val_idx])
+            fold_maes.append(mean_absolute_error(y[val_idx], preds))
+        avg_mae = np.mean(fold_maes)
+        if avg_mae < best_mae:
+            best_mae    = avg_mae
+            best_params = params
+
+    print(f"    Best MAE: {best_mae:.2f}  →  {best_params}")
+    return best_params
+
+
 # ── Walk-forward backtest ─────────────────────────────────────────────────────
 def walk_forward_backtest(df: pd.DataFrame,
-                          target: str = "passing_yards") -> pd.DataFrame:
+                          target: str = "passing_yards",
+                          params: dict = None) -> pd.DataFrame:
+    if params is None:
+        params = {"n_estimators": 200, "max_depth": 3, "learning_rate": 0.02,
+                  "subsample": 0.8, "colsample_bytree": 0.8}
     seasons  = sorted(df["season"].unique())
     results  = []
 
@@ -203,11 +250,7 @@ def walk_forward_backtest(df: pd.DataFrame,
         y_train = train[target]
         X_test  = test[FEATURE_COLS]
 
-        model = XGBRegressor(
-            n_estimators=200, max_depth=3, learning_rate=0.02,
-            subsample=0.8, colsample_bytree=0.8,
-            random_state=42, verbosity=0,
-        )
+        model = XGBRegressor(**params, random_state=42, verbosity=0)
         model.fit(X_train, y_train)
         preds = model.predict(X_test)
 
@@ -222,16 +265,16 @@ def walk_forward_backtest(df: pd.DataFrame,
 
 # ── Train & save final model ──────────────────────────────────────────────────
 def train_final_model(df: pd.DataFrame,
-                      target: str = "passing_yards") -> XGBRegressor:
+                      target: str = "passing_yards",
+                      params: dict = None) -> XGBRegressor:
+    if params is None:
+        params = {"n_estimators": 200, "max_depth": 3, "learning_rate": 0.02,
+                  "subsample": 0.8, "colsample_bytree": 0.8}
     clean = df.dropna(subset=FEATURE_COLS + [target])
     X = clean[FEATURE_COLS]
     y = clean[target]
 
-    model = XGBRegressor(
-        n_estimators=200, max_depth=3, learning_rate=0.02,
-        subsample=0.8, colsample_bytree=0.8,
-        random_state=42, verbosity=0,
-    )
+    model = XGBRegressor(**params, random_state=42, verbosity=0)
     model.fit(X, y)
 
     model_dir = Path(__file__).resolve().parent
@@ -419,19 +462,20 @@ if __name__ == "__main__":
     print("\nNaN counts per feature:")
     print(df[FEATURE_COLS].isna().sum())
 
-    print("\nRunning walk-forward backtest — passing yards...")
-    results = walk_forward_backtest(df, target="passing_yards")
-    print_accuracy_report(results, "passing_yards")
-
-    print("\nRunning walk-forward backtest — passing TDs...")
-    results_td = walk_forward_backtest(df, target="passing_tds")
-    print_accuracy_report(results_td, "passing_tds")
-
-    print("\nTraining final models on all data...")
+    print("\nTuning hyperparameters and running backtests...")
+    best_params = {}
     models = {}
     for target in ["passing_yards", "passing_tds", "attempts"]:
-        print(f"  Training {target}...")
-        models[target] = train_final_model(df, target=target)
+        bp = tune_hyperparameters(df, target=target)
+        best_params[target] = bp
+        results = walk_forward_backtest(df, target=target, params=bp)
+        print_accuracy_report(results, target)
+        print(f"  Training final {target} model...")
+        models[target] = train_final_model(df, target=target, params=bp)
+
+    print("\nBest params summary:")
+    for t, p in best_params.items():
+        print(f"  {t}: {p}")
 
     print("\nPredicting current week...")
     preds = predict_current_week(models)

@@ -6,12 +6,11 @@ import pandas as pd
 import nflreadpy as nfl
 from nflreadpy.utils_date import get_current_season
 from data.sql_helpers import save, get_connection, merge_season_into_historical, load_upcoming_games
-from backend.data.depth_chart_getter import get_all_depth_charts
+from data.depth_chart_getter import get_all_depth_charts
 from data.injury_getter import fetch_injuries
-from engine.elo_analyzer import elo_analyzer
+from engine.elo import build_elo_history
 from engine.model import load_training_data, train_final_model
-from scripts.seed_rolling_stats import build_rolling_stats
-from scripts.seed_player_features import build_player_features
+from scripts.seed import build_rolling_stats, build_player_features
 
 SKILL_POSITIONS = {"QB", "RB", "WR", "TE"}
 
@@ -22,6 +21,7 @@ def get_schedules(season: int) -> pd.DataFrame:
 
 def get_player_stats(season: int) -> pd.DataFrame:
     df = nfl.load_player_stats([season]).to_pandas()
+    df = df[df["season_type"] == "REG"]   # exclude preseason
     return df[df["position"].isin(SKILL_POSITIONS)]
 
 def get_team_stats(season: int) -> pd.DataFrame:
@@ -43,7 +43,6 @@ def run_weekly_update() -> pd.DataFrame:
     print(f"\nWeekly update — {season} season")
     print("=" * 40)
 
-    # [1] Fetch fresh data from nflverse + ESPN
     print("\n[1/7] Fetching nflverse data...")
     schedules    = get_schedules(season)
     player_stats = get_player_stats(season)
@@ -60,7 +59,6 @@ def run_weekly_update() -> pd.DataFrame:
     injuries = fetch_injuries()
     print(f"  {len(injuries)} injury entries")
 
-    # [2] Save current tables
     print("\n[4/7] Saving current tables...")
     with get_connection() as conn:
         schedules.to_sql("schedules_current",       conn, if_exists="replace", index=False)
@@ -71,21 +69,21 @@ def run_weekly_update() -> pd.DataFrame:
         injuries.to_sql("injuries_current",         conn, if_exists="replace", index=False)
     print("  Done")
 
-    # [3] Merge completed games into historical tables
     print("\n[5/7] Merging completed games into historical tables...")
     n = merge_season_into_historical(schedules)
     print(f"  {n} new games merged")
 
-    # [4] Rebuild ELO, rolling stats, player features
     print("\n[6/7] Rebuilding ELO + features...")
-    elo = elo_analyzer()
-    ratings, _ = elo.build_history()
+    ratings, _ = build_elo_history()
     print(f"  ELO rebuilt for {len(ratings)} teams")
 
-    # Only rebuild features for new games not already in the tables
     with get_connection() as conn:
-        existing_rolling = pd.read_sql("SELECT DISTINCT game_id FROM team_rolling_stats", conn)["game_id"].tolist()
-        existing_player  = pd.read_sql("SELECT DISTINCT game_id FROM player_features", conn)["game_id"].tolist()
+        existing_rolling = pd.read_sql(
+            "SELECT DISTINCT game_id FROM team_rolling_stats", conn
+        )["game_id"].tolist()
+        existing_player = pd.read_sql(
+            "SELECT DISTINCT game_id FROM player_features", conn
+        )["game_id"].tolist()
 
     new_rolling = [g for g in schedules["game_id"] if g not in existing_rolling]
     new_player  = [g for g in schedules["game_id"] if g not in existing_player]
@@ -104,7 +102,6 @@ def run_weekly_update() -> pd.DataFrame:
     else:
         print("  Player features up to date")
 
-    # [5] Retrain model on latest data
     print("\n[7/7] Retraining model...")
     df = load_training_data()
     train_final_model(df)
