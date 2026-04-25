@@ -271,16 +271,16 @@ function GameCard({ game, idx }) {
   )
 }
 
-// ── QB Props Card ─────────────────────────────────────────────────────────────
-function PropCard({ qb, idx }) {
+// ── Generic Props Card ───────────────────────────────────────────────────────
+function PropCard({ player, idx, statKey, statLabel, threshold = 25 }) {
   const [propLine, setPropLine] = useState('')
-  const [rec, setRec]           = useState(null)
 
-  const gap     = propLine !== '' ? qb.pred_passing_yards - parseFloat(propLine) : null
+  const pred    = player[`pred_${statKey}`]
+  const gap     = propLine !== '' && pred != null ? pred - parseFloat(propLine) : null
   const absGap  = gap !== null ? Math.abs(gap) : null
-  const nobet   = absGap !== null && absGap < 25
-  const isOver  = gap !== null && gap >= 25
-  const isUnder = gap !== null && gap <= -25
+  const nobet   = absGap !== null && absGap < threshold
+  const isOver  = gap !== null && gap >= threshold
+  const isUnder = gap !== null && gap <= -threshold
 
   const recColor =
     nobet   ? 'var(--text-dim)' :
@@ -288,17 +288,16 @@ function PropCard({ qb, idx }) {
     isUnder ? 'var(--red)'      : 'var(--text-dim)'
 
   const recLabel =
-    propLine === ''  ? '—'       :
-    nobet            ? 'NO BET'  :
-    isOver           ? '▲ OVER'  :
-                       '▼ UNDER'
+    propLine === '' ? '—'      :
+    nobet           ? 'NO BET' :
+    isOver          ? '▲ OVER' : '▼ UNDER'
 
   const confidence =
-    absGap === null  ? ''         :
-    absGap >= 50     ? 'HIGH'     :
-    absGap >= 25     ? 'MEDIUM'   : ''
+    absGap === null          ? ''       :
+    absGap >= threshold * 2  ? 'HIGH'   :
+    absGap >= threshold      ? 'MEDIUM' : ''
 
-  const accent = teamColor(qb.team)
+  const accent = teamColor(player.team)
 
   return (
     <div className="fadein" style={{
@@ -310,44 +309,47 @@ function PropCard({ qb, idx }) {
       padding: '14px 18px',
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-
         {/* Player info */}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 2 }}>
             <span style={{
-              fontFamily: 'var(--font-head)', fontWeight: 700,
-              fontSize: 22, color: 'var(--white)', letterSpacing: '0.02em',
+              fontFamily: 'var(--font-head)', fontWeight: 700, fontSize: 22,
+              color: 'var(--white)', letterSpacing: '0.02em',
               whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
             }}>
-              {qb.player_name}
+              {player.player_name}
             </span>
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: accent, letterSpacing: '0.15em', flexShrink: 0 }}>
-              {qb.team}
+              {player.team}
             </span>
           </div>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-dim)', letterSpacing: '0.12em' }}>
-            VS {qb.opponent}  ·  {qb.is_home ? 'HOME' : 'AWAY'}  ·  WK {qb.week}
+            VS {player.opponent}  ·  {player.is_home ? 'HOME' : 'AWAY'}  ·  WK {player.week}
           </div>
         </div>
 
-        {/* Stat predictions */}
+        {/* Stat pills — position specific */}
         <div style={{ display: 'flex', gap: 0, borderLeft: '1px solid var(--border)' }}>
-          <Pill label="PROJ YDS"   value={qb.pred_passing_yards?.toFixed(0) ?? '—'} color="var(--silver-lt)" />
-          <Pill label="PROJ TDS"   value={qb.pred_passing_tds?.toFixed(1)   ?? '—'} color="var(--silver)" />
-          <Pill label="PROJ ATT"   value={qb.pred_attempts?.toFixed(0)       ?? '—'} color="var(--silver)" />
-          <Pill label="IMP TOTAL"  value={qb.implied_team_total?.toFixed(1)  ?? '—'} color="var(--text-dim)" />
+          {player.pred_passing_yards  != null && <Pill label="PROJ YDS"  value={player.pred_passing_yards?.toFixed(0)  ?? '—'} color="var(--silver-lt)" />}
+          {player.pred_passing_tds    != null && <Pill label="PROJ TDS"  value={player.pred_passing_tds?.toFixed(1)    ?? '—'} color="var(--silver)" />}
+          {player.pred_attempts       != null && <Pill label="PROJ ATT"  value={player.pred_attempts?.toFixed(0)        ?? '—'} color="var(--silver)" />}
+          {player.pred_rushing_yards  != null && <Pill label="RUSH YDS"  value={player.pred_rushing_yards?.toFixed(0)  ?? '—'} color="var(--silver-lt)" />}
+          {player.pred_rushing_tds    != null && <Pill label="RUSH TDS"  value={player.pred_rushing_tds?.toFixed(1)    ?? '—'} color="var(--silver)" />}
+          {player.pred_carries        != null && <Pill label="CARRIES"   value={player.pred_carries?.toFixed(0)         ?? '—'} color="var(--silver)" />}
+          {player.pred_receiving_yards!= null && <Pill label="REC YDS"   value={player.pred_receiving_yards?.toFixed(0)?? '—'} color="var(--silver-lt)" />}
+          {player.pred_receiving_tds  != null && <Pill label="REC TDS"   value={player.pred_receiving_tds?.toFixed(1)  ?? '—'} color="var(--silver)" />}
+          {player.pred_receptions     != null && <Pill label="REC"       value={player.pred_receptions?.toFixed(1)      ?? '—'} color="var(--silver)" />}
+          {player.pred_targets        != null && <Pill label="TARGETS"   value={player.pred_targets?.toFixed(1)         ?? '—'} color="var(--silver)" />}
+          <Pill label="IMP TOTAL" value={player.implied_team_total?.toFixed(1) ?? '—'} color="var(--text-dim)" />
         </div>
 
-        {/* Prop line input + recommendation */}
+        {/* Prop line input */}
         <div style={{
           display: 'flex', flexDirection: 'column', alignItems: 'center',
-          gap: 6, borderLeft: '1px solid var(--border)', paddingLeft: 16, minWidth: 110,
+          gap: 6, borderLeft: '1px solid var(--border)', paddingLeft: 16, minWidth: 120,
         }}>
-          <span style={{
-            fontFamily: 'var(--font-mono)', fontSize: 9,
-            color: 'var(--text-dim)', letterSpacing: '0.15em',
-          }}>
-            BOOK LINE
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-dim)', letterSpacing: '0.15em' }}>
+            {statLabel} LINE
           </span>
           <input
             type="number"
@@ -364,18 +366,12 @@ function PropCard({ qb, idx }) {
           />
           {propLine !== '' && (
             <div style={{ textAlign: 'center' }}>
-              <div style={{
-                fontFamily: 'var(--font-head)', fontWeight: 700,
-                fontSize: 14, letterSpacing: '0.12em', color: recColor,
-              }}>
+              <div style={{ fontFamily: 'var(--font-head)', fontWeight: 700, fontSize: 14, letterSpacing: '0.12em', color: recColor }}>
                 {recLabel}
               </div>
               {confidence && (
-                <div style={{
-                  fontFamily: 'var(--font-mono)', fontSize: 8,
-                  color: recColor, letterSpacing: '0.15em', opacity: 0.7,
-                }}>
-                  {confidence}  {gap !== null ? `(${gap > 0 ? '+' : ''}${gap.toFixed(0)})` : ''}
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8, color: recColor, letterSpacing: '0.15em', opacity: 0.7 }}>
+                  {confidence}  {gap !== null ? `(${gap > 0 ? '+' : ''}${gap.toFixed(1)})` : ''}
                 </div>
               )}
             </div>
@@ -387,79 +383,123 @@ function PropCard({ qb, idx }) {
 }
 
 // ── Props Tab ─────────────────────────────────────────────────────────────────
+const POSITION_CONFIG = {
+  qb: {
+    label: 'QB PROPS', super: 'Quarterback projections',
+    endpoint: '/props/qb',
+    statKey: 'passing_yards', statLabel: 'PASS YDS', threshold: 25,
+    legend: ['▲ OVER ≥ +25 yds', '▼ UNDER ≤ −25 yds', 'NO BET < 25 yds gap'],
+  },
+  rb: {
+    label: 'RB PROPS', super: 'Running back projections',
+    endpoint: '/props/rb',
+    statKey: 'rushing_yards', statLabel: 'RUSH YDS', threshold: 15,
+    legend: ['▲ OVER ≥ +15 yds', '▼ UNDER ≤ −15 yds', 'NO BET < 15 yds gap'],
+  },
+  wr: {
+    label: 'WR PROPS', super: 'Wide receiver projections',
+    endpoint: '/props/wr',
+    statKey: 'receiving_yards', statLabel: 'REC YDS', threshold: 15,
+    legend: ['▲ OVER ≥ +15 yds', '▼ UNDER ≤ −15 yds', 'NO BET < 15 yds gap'],
+  },
+}
+
 function PropsTab() {
-  const [qbs, setQbs]       = useState([])
-  const [loading, setLoading] = useState(true)
+  const [pos, setPos]         = useState('qb')
+  const [data, setData]       = useState({})
+  const [loading, setLoading] = useState(false)
   const [status, setStatus]   = useState('')
 
+  const cfg = POSITION_CONFIG[pos]
+
   useEffect(() => {
-    axios.get(`${API}/props/qb`)
-      .then(r => { setQbs(r.data); setLoading(false) })
+    if (data[pos]) return
+    setLoading(true)
+    setStatus('')
+    axios.get(`${API}${cfg.endpoint}`)
+      .then(r => { setData(d => ({ ...d, [pos]: r.data })); setLoading(false) })
       .catch(() => { setStatus('No prop data — run weekly update first.'); setLoading(false) })
-  }, [])
+  }, [pos])
+
+  const players = data[pos] || []
+
+  const posTabStyle = (id) => ({
+    fontFamily: 'var(--font-head)', fontWeight: 500,
+    fontSize: 12, letterSpacing: '0.12em', padding: '6px 18px',
+    border: 'none', cursor: 'pointer', transition: 'all 0.15s',
+    background: pos === id ? 'var(--gold)' : 'transparent',
+    color: pos === id ? 'var(--bg)' : 'var(--text-dim)',
+  })
 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 18 }}>
         <div>
-          <Super>Quarterback projections</Super>
+          <Super>{cfg.super}</Super>
           <div style={{
             fontFamily: 'var(--font-head)', fontWeight: 700,
             fontSize: 32, color: 'var(--white)', letterSpacing: '0.03em', lineHeight: 1,
           }}>
-            QB PROPS
+            {cfg.label}
           </div>
-          <div style={{
-            marginTop: 6, fontFamily: 'var(--font-mono)', fontSize: 10,
-            color: 'var(--text-dim)', letterSpacing: '0.12em',
-          }}>
+          <div style={{ marginTop: 6, fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-dim)', letterSpacing: '0.12em' }}>
             Enter the book's prop line to get an OVER / UNDER recommendation
           </div>
         </div>
-        <div style={{
-          fontFamily: 'var(--font-mono)', fontSize: 9,
-          color: 'var(--text-dim)', letterSpacing: '0.15em', textAlign: 'right',
-        }}>
-          <div style={{ color: 'var(--green)', marginBottom: 2 }}>▲ OVER  ≥ +25 yds</div>
-          <div style={{ color: 'var(--red)'   }}>▼ UNDER ≤ −25 yds</div>
-          <div style={{ marginTop: 2 }}>NO BET  &lt; 25 yds gap</div>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
+          {/* Position sub-tabs */}
+          <div style={{ display: 'flex', border: '1px solid var(--border2)', overflow: 'hidden' }}>
+            {['qb','rb','wr'].map(p => (
+              <button key={p} onClick={() => setPos(p)} style={posTabStyle(p)}>
+                {p.toUpperCase()}
+              </button>
+            ))}
+          </div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-dim)', letterSpacing: '0.15em', textAlign: 'right' }}>
+            <div style={{ color: 'var(--green)', marginBottom: 2 }}>{cfg.legend[0]}</div>
+            <div style={{ color: 'var(--red)' }}>{cfg.legend[1]}</div>
+            <div style={{ marginTop: 2 }}>{cfg.legend[2]}</div>
+          </div>
         </div>
       </div>
 
       <Rule style={{ marginBottom: 18 }} />
 
       {status && (
-        <div style={{
-          fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.1em',
-          color: 'var(--text-dim)', marginBottom: 14,
-        }}>
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.1em', color: 'var(--text-dim)', marginBottom: 14 }}>
           {status}
         </div>
       )}
 
       {loading ? (
-        <div style={{
-          textAlign: 'center', marginTop: 80,
-          fontFamily: 'var(--font-mono)', fontSize: 11,
-          color: 'var(--text-dim)', letterSpacing: '0.2em',
-        }}>LOADING...</div>
-      ) : qbs.length === 0 ? (
+        <div style={{ textAlign: 'center', marginTop: 80, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-dim)', letterSpacing: '0.2em' }}>
+          LOADING...
+        </div>
+      ) : players.length === 0 ? (
         <div style={{ textAlign: 'center', marginTop: 80, color: 'var(--text-dim)' }}>
           <div style={{ marginBottom: 8, fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.15em' }}>
             NO PROP DATA AVAILABLE
           </div>
-          <div style={{ fontSize: 13, color: 'var(--text-dim)' }}>
-            Run the weekly update from the PICKS tab to generate QB projections.
+          <div style={{ fontSize: 13 }}>
+            Run the weekly update from the PICKS tab to generate projections.
           </div>
         </div>
       ) : (
-        qbs.map((qb, i) => <PropCard key={`${qb.player_name}-${qb.team}`} qb={qb} idx={i} />)
+        players.map((p, i) => (
+          <PropCard
+            key={`${p.player_name}-${p.team}-${i}`}
+            player={p} idx={i}
+            statKey={cfg.statKey}
+            statLabel={cfg.statLabel}
+            threshold={cfg.threshold}
+          />
+        ))
       )}
     </div>
   )
 }
 
-// ── Existing tabs (unchanged) ─────────────────────────────────────────────────
+// ── Existing tabs (unchanged) ─────────────────────────────────────────────────// ── Existing tabs (unchanged) ─────────────────────────────────────────────────
 function WinnersTab() {
   const [predictions, setPredictions] = useState([])
   const [loading, setLoading]         = useState(true)
