@@ -271,7 +271,7 @@ function GameCard({ game, idx }) {
   )
 }
 
-// ── Generic Props Card ───────────────────────────────────────────────────────
+// ── Generic Props Card ────────────────────────────────────────────────────────
 function PropCard({ player, idx, statKey, statLabel, threshold = 25 }) {
   const [propLine, setPropLine] = useState('')
 
@@ -309,7 +309,6 @@ function PropCard({ player, idx, statKey, statLabel, threshold = 25 }) {
       padding: '14px 18px',
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-        {/* Player info */}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 2 }}>
             <span style={{
@@ -328,22 +327,20 @@ function PropCard({ player, idx, statKey, statLabel, threshold = 25 }) {
           </div>
         </div>
 
-        {/* Stat pills — position specific */}
         <div style={{ display: 'flex', gap: 0, borderLeft: '1px solid var(--border)' }}>
-          {player.pred_passing_yards  != null && <Pill label="PROJ YDS"  value={player.pred_passing_yards?.toFixed(0)  ?? '—'} color="var(--silver-lt)" />}
-          {player.pred_passing_tds    != null && <Pill label="PROJ TDS"  value={player.pred_passing_tds?.toFixed(1)    ?? '—'} color="var(--silver)" />}
-          {player.pred_attempts       != null && <Pill label="PROJ ATT"  value={player.pred_attempts?.toFixed(0)        ?? '—'} color="var(--silver)" />}
-          {player.pred_rushing_yards  != null && <Pill label="RUSH YDS"  value={player.pred_rushing_yards?.toFixed(0)  ?? '—'} color="var(--silver-lt)" />}
-          {player.pred_rushing_tds    != null && <Pill label="RUSH TDS"  value={player.pred_rushing_tds?.toFixed(1)    ?? '—'} color="var(--silver)" />}
-          {player.pred_carries        != null && <Pill label="CARRIES"   value={player.pred_carries?.toFixed(0)         ?? '—'} color="var(--silver)" />}
-          {player.pred_receiving_yards!= null && <Pill label="REC YDS"   value={player.pred_receiving_yards?.toFixed(0)?? '—'} color="var(--silver-lt)" />}
-          {player.pred_receiving_tds  != null && <Pill label="REC TDS"   value={player.pred_receiving_tds?.toFixed(1)  ?? '—'} color="var(--silver)" />}
-          {player.pred_receptions     != null && <Pill label="REC"       value={player.pred_receptions?.toFixed(1)      ?? '—'} color="var(--silver)" />}
-          {player.pred_targets        != null && <Pill label="TARGETS"   value={player.pred_targets?.toFixed(1)         ?? '—'} color="var(--silver)" />}
+          {player.pred_passing_yards   != null && <Pill label="PROJ YDS"  value={player.pred_passing_yards?.toFixed(0)   ?? '—'} color="var(--silver-lt)" />}
+          {player.pred_passing_tds     != null && <Pill label="PROJ TDS"  value={player.pred_passing_tds?.toFixed(1)     ?? '—'} color="var(--silver)" />}
+          {player.pred_attempts        != null && <Pill label="PROJ ATT"  value={player.pred_attempts?.toFixed(0)         ?? '—'} color="var(--silver)" />}
+          {player.pred_rushing_yards   != null && <Pill label="RUSH YDS"  value={player.pred_rushing_yards?.toFixed(0)   ?? '—'} color="var(--silver-lt)" />}
+          {player.pred_rushing_tds     != null && <Pill label="RUSH TDS"  value={player.pred_rushing_tds?.toFixed(1)     ?? '—'} color="var(--silver)" />}
+          {player.pred_carries         != null && <Pill label="CARRIES"   value={player.pred_carries?.toFixed(0)          ?? '—'} color="var(--silver)" />}
+          {player.pred_receiving_yards != null && <Pill label="REC YDS"   value={player.pred_receiving_yards?.toFixed(0) ?? '—'} color="var(--silver-lt)" />}
+          {player.pred_receiving_tds   != null && <Pill label="REC TDS"   value={player.pred_receiving_tds?.toFixed(1)   ?? '—'} color="var(--silver)" />}
+          {player.pred_receptions      != null && <Pill label="REC"       value={player.pred_receptions?.toFixed(1)       ?? '—'} color="var(--silver)" />}
+          {player.pred_targets         != null && <Pill label="TARGETS"   value={player.pred_targets?.toFixed(1)          ?? '—'} color="var(--silver)" />}
           <Pill label="IMP TOTAL" value={player.implied_team_total?.toFixed(1) ?? '—'} color="var(--text-dim)" />
         </div>
 
-        {/* Prop line input */}
         <div style={{
           display: 'flex', flexDirection: 'column', alignItems: 'center',
           gap: 6, borderLeft: '1px solid var(--border)', paddingLeft: 16, minWidth: 120,
@@ -418,7 +415,7 @@ function PropsTab() {
     setStatus('')
     axios.get(`${API}${cfg.endpoint}`)
       .then(r => { setData(d => ({ ...d, [pos]: r.data })); setLoading(false) })
-      .catch(() => { setStatus('No prop data — run weekly update first.'); setLoading(false) })
+      .catch(() => { setStatus('No prop data. Run weekly update first.'); setLoading(false) })
   }, [pos])
 
   const players = data[pos] || []
@@ -447,7 +444,6 @@ function PropsTab() {
           </div>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
-          {/* Position sub-tabs */}
           <div style={{ display: 'flex', border: '1px solid var(--border2)', overflow: 'hidden' }}>
             {['qb','rb','wr'].map(p => (
               <button key={p} onClick={() => setPos(p)} style={posTabStyle(p)}>
@@ -499,7 +495,7 @@ function PropsTab() {
   )
 }
 
-// ── Existing tabs (unchanged) ─────────────────────────────────────────────────// ── Existing tabs (unchanged) ─────────────────────────────────────────────────
+// ── Picks Tab ─────────────────────────────────────────────────────────────────
 function WinnersTab() {
   const [predictions, setPredictions] = useState([])
   const [loading, setLoading]         = useState(true)
@@ -527,7 +523,7 @@ function WinnersTab() {
       const res = await axios.get(`${API}/predictions`)
       setPredictions(res.data)
     } catch {
-      setStatus('Connection error — verify api.py is running')
+      setStatus('Connection error. Verify api.py is running.')
     } finally {
       setLoading(false)
     }
@@ -539,7 +535,7 @@ function WinnersTab() {
       const res = await axios.get(`${API}/predictions/historical`, { params: { season, week } })
       setPredictions(normalizeHistorical(res.data))
     } catch {
-      setStatus('Connection error — verify api.py is running')
+      setStatus('Connection error. Verify api.py is running.')
     } finally {
       setLoading(false)
     }
@@ -668,7 +664,7 @@ function WinnersTab() {
         }}>LOADING...</div>
       ) : predictions.length === 0 ? (
         <div style={{ textAlign: 'center', marginTop: 80, color: 'var(--text-dim)' }}>
-          No predictions — click Refresh to run the weekly update.
+          No predictions. Click Refresh to run the weekly update.
         </div>
       ) : (
         predictions.map((g, i) => <GameCard key={g.game_id} game={g} idx={i} />)
@@ -677,6 +673,7 @@ function WinnersTab() {
   )
 }
 
+// ── Rankings Tab ──────────────────────────────────────────────────────────────
 function EloTab() {
   const [ratings, setRatings] = useState([])
 
@@ -751,6 +748,7 @@ function EloTab() {
   )
 }
 
+// ── Stats Tab ─────────────────────────────────────────────────────────────────
 function AboutTab() {
   const [stats, setStats] = useState([])
   useEffect(() => { axios.get(`${API}/stats`).then(r => setStats(r.data)).catch(() => {}) }, [])
@@ -840,8 +838,7 @@ function AboutTab() {
   )
 }
 
-
-// ── Strategy Tab ──────────────────────────────────────────────────────────────
+// ── Strategy Tab helpers ──────────────────────────────────────────────────────
 function StatBox({ label, value, color = 'var(--gold)' }) {
   return (
     <div style={{
@@ -897,12 +894,13 @@ function BetRow({ label, value, good = null }) {
       padding: '8px 14px', borderBottom: '1px solid var(--border)',
       fontFamily: 'var(--font-mono)', fontSize: 11,
     }}>
-      <span style={{ color: 'var(--text-dim)', letterSpacing: '0.1em' }}>{label}</span>
+      <span style={{ color: 'var(--text)', letterSpacing: '0.1em' }}>{label}</span>
       <span style={{ color, fontWeight: good !== null ? 700 : 400 }}>{value}</span>
     </div>
   )
 }
 
+// ── Strategy Tab ──────────────────────────────────────────────────────────────
 function StrategyTab() {
   return (
     <div style={{ maxWidth: 780 }}>
@@ -921,183 +919,160 @@ function StrategyTab() {
       {/* ── The Math ── */}
       <Section title="THE MATH" super="Before anything else" accent="var(--gold)">
         <Callout>
-          At -110 odds (standard US), you must win 52.4% of bets just to break even after the vig.
-          This is the single most important number in sports betting. Everything else is secondary.
+          At -110 odds, you need to win 52.4% of bets just to break even after the vig.
+          Everything else in this guide is secondary to understanding that number.
         </Callout>
         <div style={{ display: 'flex', gap: 1, marginBottom: 16 }}>
           <StatBox label="BREAK-EVEN WIN RATE" value="52.4%" color="var(--gold)" />
-          <StatBox label="VIG ON $100 BET" value="$9.09" color="var(--silver)" />
-          <StatBox label="ROI AT 55% WIN RATE" value="+4.5%" color="var(--green)" />
-          <StatBox label="ROI AT 50% WIN RATE" value="-4.5%" color="var(--red)" />
+          <StatBox label="VIG ON $100 BET"      value="$9.09"  color="var(--silver)" />
+          <StatBox label="ROI AT 55% WIN RATE"  value="+4.5%" color="var(--green)" />
+          <StatBox label="ROI AT 50% WIN RATE"  value="-4.5%" color="var(--red)" />
         </div>
-        <Callout>
-          Implied probability at -110: 52.4%. If you believe a team has a 55%+ chance of covering,
-          the bet has positive expected value. Below 52.4%, you are paying the book to gamble.
-        </Callout>
-        <div style={{ border: '1px solid var(--border)', marginTop: 8 }}>
-          <BetRow label="BET $110 TO WIN $100 AT -110" value="" />
-          <BetRow label="Win $100 net" value="+$100" good={true} />
-          <BetRow label="Lose $110 net" value="-$110" good={false} />
+        <div style={{ border: '1px solid var(--border)' }}>
+          <BetRow label="Bet $110 to win $100 at -110" value="" />
+          <BetRow label="Win" value="+$100 net" good={true} />
+          <BetRow label="Lose" value="-$110 net" good={false} />
           <BetRow label="Break-even win rate" value="52.4%" />
-          <BetRow label="At 55% win rate on 100 bets" value="+$450 profit" good={true} />
-          <BetRow label="At 50% win rate on 100 bets" value="-$550 loss" good={false} />
+          <BetRow label="55% win rate over 100 bets" value="+$450" good={true} />
+          <BetRow label="50% win rate over 100 bets" value="-$550" good={false} />
         </div>
       </Section>
 
       {/* ── Game Picks ── */}
       <Section title="GAME PICKS" super="Spread model" accent="var(--blue-lt)">
         <Callout>
-          The model predicts the home team margin using ELO ratings, player EPA, rolling team stats,
-          and injury data across 26 seasons. It's then stacked with Vegas's own spread using a Ridge
-          meta-model, which is how it stays competitive.
+          The model predicts the home team margin using ELO ratings, player EPA, rolling team
+          stats, and injury data.
         </Callout>
         <div style={{ display: 'flex', gap: 1, marginBottom: 16 }}>
-          <StatBox label="MODEL ACCURACY" value="66.6%" color="var(--silver-lt)" />
-          <StatBox label="EDGE VS VEGAS" value="+0.1%" color="var(--gold)" />
-          <StatBox label="EDGE THRESHOLD" value="±2.5 pts" color="var(--silver)" />
-          <StatBox label="SHARP FILTER" value="100% ATS*" color="var(--green)" />
-        </div>
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-dim)', letterSpacing: '0.1em', marginBottom: 16 }}>
-          *Sharp filter: 3 bets, 2022 sample. Not statistically significant on its own.
+          <StatBox label="MODEL ACCURACY" value="66.6%"    color="var(--silver-lt)" />
+          <StatBox label="EDGE VS VEGAS"  value="+0.1%"    color="var(--silver)" />
+          <StatBox label="EDGE THRESHOLD" value="±2.5 pts" color="var(--gold)" />
         </div>
 
-        <div style={{ fontFamily: 'var(--font-head)', fontWeight: 600, fontSize: 14, color: 'var(--silver-lt)', letterSpacing: '0.08em', marginBottom: 10 }}>
-          HOW TO READ A GAME PICK
+        <div style={{ fontFamily: 'var(--font-head)', fontWeight: 600, fontSize: 13, color: 'var(--silver-lt)', letterSpacing: '0.08em', marginBottom: 10 }}>
+          READING A PICK
         </div>
         <div style={{ border: '1px solid var(--border)', marginBottom: 16 }}>
-          <BetRow label="MODEL spread" value="Home team projected margin" />
-          <BetRow label="VEGAS spread" value="Book's line (negative = home favored)" />
-          <BetRow label="EDGE" value="Model minus Vegas — the disagreement" />
-          <BetRow label="Gold border card" value="Edge ≥ 2.5 pts detected" />
+          <BetRow label="MODEL"       value="Projected home team margin" />
+          <BetRow label="VEGAS"       value="Book's line (negative means home favored)" />
+          <BetRow label="EDGE"        value="Model minus Vegas" />
+          <BetRow label="Gold border" value="Edge ≥ 2.5 pts" />
         </div>
 
-        <div style={{ fontFamily: 'var(--font-head)', fontWeight: 600, fontSize: 14, color: 'var(--silver-lt)', letterSpacing: '0.08em', marginBottom: 10 }}>
+        <div style={{ fontFamily: 'var(--font-head)', fontWeight: 600, fontSize: 13, color: 'var(--silver-lt)', letterSpacing: '0.08em', marginBottom: 10 }}>
           WHEN TO BET
         </div>
         <div style={{ border: '1px solid var(--border)', marginBottom: 16 }}>
-          <BetRow label="Edge ≥ 2.5 pts AND model + Vegas agree on winner" value="Potential bet" good={true} />
-          <BetRow label="Edge ≥ 2.5 pts AND line has moved toward model" value="Stronger signal" good={true} />
-          <BetRow label="Edge < 2.5 pts" value="Skip — noise, not signal" good={false} />
-          <BetRow label="Weeks 17-18" value="Skip — rest + motivation variance" good={false} />
-          <BetRow label="Division games" value="Caution — familiarity reduces edge" />
+          <BetRow label="Edge ≥ 2.5 pts, model and Vegas agree on winner" value="Consider betting"               good={true} />
+          <BetRow label="Edge ≥ 2.5 pts, line has moved toward model"      value="Stronger signal"               good={true} />
+          <BetRow label="Edge < 2.5 pts"                                    value="No edge"                       good={false} />
+          <BetRow label="Weeks 17–18"                                        value="Rest and motivation variance"  good={false} />
+          <BetRow label="Division games"                                     value="Use caution" />
         </div>
 
         <Callout color="var(--blue-lt)">
-          The model is trained on public data. Vegas has sharper information. Treat the edge as a
-          starting point, not a guarantee. The value is in finding games where Vegas may have
-          mispriced — not in blindly fading Vegas every time.
+          The model uses public data. Vegas has more information. Treat the edge as a starting
+          point. The goal is finding mispriced games, not blindly fading the book.
         </Callout>
       </Section>
 
       {/* ── QB Props ── */}
       <Section title="QB PROPS" super="Passing yards model" accent="var(--silver)">
         <Callout>
-          QB passing yards have an all-time MAE of 59 yards — meaning the model is off by about
-          59 yards on average. Vegas is sharper here (~40-45 yards MAE). The model is most useful
-          as a sanity check against the book's line, not as a standalone predictor.
+          The model averages about 59 yards of error on QB passing yards. Vegas is sharper
+          (~40–45 MAE). Use this as a second opinion against the book's line, not a
+          standalone signal.
         </Callout>
         <div style={{ display: 'flex', gap: 1, marginBottom: 16 }}>
-          <StatBox label="MODEL MAE" value="59 yds" color="var(--silver)" />
-          <StatBox label="WITHIN 25 YDS" value="26.9%" color="var(--silver)" />
+          <StatBox label="MAE"           value="59 yds"  color="var(--silver)" />
+          <StatBox label="WITHIN 25 YDS" value="26.9%"   color="var(--silver)" />
           <StatBox label="BET THRESHOLD" value="±25 yds" color="var(--gold)" />
-          <StatBox label="HIGH CONFIDENCE" value="±50 yds" color="var(--gold-lt)" />
         </div>
-
         <div style={{ border: '1px solid var(--border)', marginBottom: 16 }}>
-          <BetRow label="Model predicts 290, book says 255" value="▲ OVER (+35)" good={true} />
-          <BetRow label="Model predicts 220, book says 255" value="▼ UNDER (-35)" good={true} />
-          <BetRow label="Model predicts 265, book says 255" value="NO BET (+10)" good={false} />
+          <BetRow label="Model 290, book 255" value="▲ OVER (+35)"  good={true} />
+          <BetRow label="Model 220, book 255" value="▼ UNDER (-35)" good={true} />
+          <BetRow label="Model 265, book 255" value="NO BET (+10)"  good={false} />
         </div>
-
         <Callout>
-          Key features: implied team total, rolling passing yards, air yards per attempt, CPOE, and
-          opponent pass defense rank. Implied team total is the strongest single feature — a QB on
-          a team implied for 28 points will throw more than one implied for 17.
+          Implied team total is the strongest single feature. A QB on a team implied for 28
+          points will throw more than one implied for 17. The model also uses rolling passing
+          EPA, air yards per attempt, CPOE, and opponent pass defense.
         </Callout>
       </Section>
 
       {/* ── RB Props ── */}
       <Section title="RB PROPS" super="Rushing yards model" accent="var(--silver)">
         <Callout>
-          RB rushing yards MAE of 27 yards — better than QB props relative to the stat range.
-          Carries (4.4 MAE) and receptions (1.4 MAE) are essentially perfect. The bell cow back
-          is identified automatically by most carries over the last 4 games.
+          Carries and receptions are pretty good predictions. Rushing yards average about
+          27 yards of error.
         </Callout>
         <div style={{ display: 'flex', gap: 1, marginBottom: 16 }}>
-          <StatBox label="RUSH YDS MAE" value="27 yds" color="var(--silver)" />
-          <StatBox label="CARRIES MAE" value="4.4" color="var(--green)" />
-          <StatBox label="RUSH TDS (±1)" value="92.7%" color="var(--green)" />
+          <StatBox label="RUSH YDS MAE"  value="27 yds"  color="var(--silver)" />
+          <StatBox label="CARRIES MAE"   value="4.4"     color="var(--green)" />
+          <StatBox label="RUSH TDS (±1)" value="92.7%"   color="var(--green)" />
           <StatBox label="BET THRESHOLD" value="±15 yds" color="var(--gold)" />
         </div>
-
         <div style={{ border: '1px solid var(--border)', marginBottom: 16 }}>
-          <BetRow label="Carries and receptions" value="Highest confidence — near perfect" good={true} />
-          <BetRow label="Rushing yards" value="Good — use ±15 yd threshold" good={true} />
-          <BetRow label="Rushing TDs" value="Useful — 92.7% within 1 TD" good={true} />
-          <BetRow label="Receiving yards" value="Solid for pass-catching backs" />
+          <BetRow label="Carries and receptions" value="Most reliable, near perfect"    good={true} />
+          <BetRow label="Rushing yards"          value="Use ±15 yd threshold"            good={true} />
+          <BetRow label="Rushing TDs"            value="92.7% within 1 TD"               good={true} />
+          <BetRow label="Receiving yards"        value="Solid for pass-catching backs" />
         </div>
-
         <Callout>
-          The threshold is tighter than QB (15 yards vs 25) because RB rushing yards vary less
-          game to game. A predicted gap of 15+ yards is more meaningful here than the same gap
-          on a QB passing yards prop.
+          The threshold is tighter than QB (15 yards vs 25) because RB rushing yards vary
+          less week to week. A 15-yard gap here carries more weight than the same gap on
+          a passing yards prop.
         </Callout>
       </Section>
 
       {/* ── WR Props ── */}
       <Section title="WR PROPS" super="Receiving yards model" accent="var(--silver)">
         <Callout>
-          WR props are the most reliable bets in the model. Target share, air yards share, and WOPR
-          are highly stable week to week — the model captures scheme tendencies better than
-          game-to-game variance. Receptions and targets are essentially perfect.
+          Target share and air yards share are stable week to week. The model captures
+          scheme tendencies better than game-to-game variance.
         </Callout>
         <div style={{ display: 'flex', gap: 1, marginBottom: 16 }}>
-          <StatBox label="REC YDS MAE" value="27 yds" color="var(--silver)" />
-          <StatBox label="RECEPTIONS MAE" value="1.66" color="var(--green)" />
-          <StatBox label="REC TDS (±1)" value="95.8%" color="var(--green)" />
-          <StatBox label="BET THRESHOLD" value="±15 yds" color="var(--gold)" />
+          <StatBox label="REC YDS MAE"    value="27 yds"  color="var(--silver)" />
+          <StatBox label="RECEPTIONS MAE" value="1.66"    color="var(--green)" />
+          <StatBox label="REC TDS EXACT"  value="74.7%"   color="var(--green)" />
+          <StatBox label="BET THRESHOLD"  value="±15 yds" color="var(--gold)" />
         </div>
-
         <div style={{ border: '1px solid var(--border)', marginBottom: 16 }}>
-          <BetRow label="Receptions and targets" value="Best bets — near perfect accuracy" good={true} />
-          <BetRow label="Receiving TDs" value="74.7% exact — very strong" good={true} />
-          <BetRow label="Receiving yards" value="Good — same accuracy as RB rushing" good={true} />
-          <BetRow label="Top 3 WRs shown per team" value="Sorted by target share" />
+          <BetRow label="Receptions and targets" value="Most reliable bets"             good={true} />
+          <BetRow label="Receiving TDs"          value="74.7% exact"                    good={true} />
+          <BetRow label="Receiving yards"        value="Similar accuracy to RB rushing" good={true} />
+          <BetRow label="Top 3 WRs per team"     value="Sorted by target share" />
         </div>
-
         <Callout>
-          Target share is the single most predictive WR feature. A WR getting 28% of team targets
-          consistently will continue to get roughly that — the model leans on this stability.
-          WR receptions and targets are the highest-confidence prop bets in the entire app.
+          A WR consistently getting 28% of team targets will keep getting roughly that.
+          The model leans heavily on this stability.
         </Callout>
       </Section>
 
       {/* ── Bankroll ── */}
       <Section title="BANKROLL" super="Money management" accent="var(--gold)">
         <Callout>
-          The single most common mistake is betting too much per game. Even a profitable system
-          will go on losing streaks. Flat betting 1-3% of your bankroll per bet survives variance
-          long enough to let the edge compound.
+          Betting too much per game is the most common mistake. Even a profitable system goes
+          on losing streaks. Flat betting 1–3% per bet gives you enough runway to let the
+          edge play out over hundreds of bets.
         </Callout>
         <div style={{ display: 'flex', gap: 1, marginBottom: 16 }}>
-          <StatBox label="RECOMMENDED UNIT" value="1-2%" color="var(--gold)" />
-          <StatBox label="MAX PER GAME" value="3%" color="var(--silver)" />
-          <StatBox label="NEVER BET MORE THAN" value="5%" color="var(--red)" />
-          <StatBox label="TRACK EVERY BET" value="Always" color="var(--silver-lt)" />
+          <StatBox label="RECOMMENDED UNIT" value="1–2%"  color="var(--gold)" />
+          <StatBox label="MAX PER GAME"      value="3%"    color="var(--silver)" />
+          <StatBox label="NEVER EXCEED"      value="5%"    color="var(--red)" />
+          <StatBox label="TRACK EVERY BET"   value="Always" color="var(--silver-lt)" />
         </div>
-
         <div style={{ border: '1px solid var(--border)', marginBottom: 16 }}>
-          <BetRow label="$1,000 bankroll at 1% unit" value="$10 per bet" />
-          <BetRow label="55% win rate, 100 bets" value="+$450 profit" good={true} />
-          <BetRow label="10-game losing streak chance at 55%" value="~0.3% — it will happen" />
-          <BetRow label="10-game losing streak at 5% units" value="-$500 drawdown" good={false} />
-          <BetRow label="10-game losing streak at 1% units" value="-$100 drawdown" good={true} />
+          <BetRow label="$1,000 bankroll at 1% unit"         value="$10 per bet" />
+          <BetRow label="55% win rate, 100 bets"              value="+$450"      good={true} />
+          <BetRow label="10-game losing streak at 55% (prob)" value="~0.3% (it will happen)" />
+          <BetRow label="10-game losing streak at 5% units"   value="-$500 drawdown" good={false} />
+          <BetRow label="10-game losing streak at 1% units"   value="-$100 drawdown" good={true} />
         </div>
-
         <Callout color="var(--gold-dk)">
-          This tool gives you an edge, not a guarantee. No model beats the book every week.
-          The goal is to be right more often than 52.4% over hundreds of bets — not to win every
-          single one. Patience and discipline matter more than any single prediction.
+          The goal is to be right more than 52.4% of the time over hundreds of bets,
+          to win every week. Discipline over time matters more than any single prediction.
         </Callout>
       </Section>
     </div>
@@ -1160,9 +1135,9 @@ export default function App() {
         </div>
 
         <div style={{ maxWidth: 1000, margin: '0 auto', padding: '32px 28px 64px' }}>
-          {tab === 'winners' && <WinnersTab />}
-          {tab === 'props'   && <PropsTab />}
-          {tab === 'elo'     && <EloTab />}
+          {tab === 'winners'  && <WinnersTab />}
+          {tab === 'props'    && <PropsTab />}
+          {tab === 'elo'      && <EloTab />}
           {tab === 'about'    && <AboutTab />}
           {tab === 'strategy' && <StrategyTab />}
         </div>
