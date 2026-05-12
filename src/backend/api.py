@@ -201,25 +201,20 @@ def _run_pipeline():
     backend_dir = Path(__file__).resolve().parent
     python      = sys.executable
     try:
-        for script, label in [
-            (backend_dir / "scripts" / "weekly_update.py", "weekly_update"),
-            (backend_dir / "engine"  / "predictor.py",     "predictor"),
-        ]:
-            result = subprocess.run(
-                [python, str(script)],
-                capture_output=True, text=True, cwd=str(backend_dir)
-            )
-            if result.returncode != 0:
-                raise RuntimeError(f"{label} failed:\n{result.stderr}")
+        result = subprocess.run(
+            [python, str(backend_dir / "engine" / "predictor.py")],
+            capture_output=True, text=True, cwd=str(backend_dir)
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"predictor failed:\n{result.stderr}")
         pipeline_status["last_result"] = "success"
     except Exception as e:
         pipeline_status["last_result"] = f"error: {str(e)}"
     finally:
         pipeline_status["running"]  = False
         pipeline_status["last_run"] = datetime.now().isoformat()
-
-
 @app.post("/refresh")
+
 def refresh(background_tasks: BackgroundTasks):
     if pipeline_status["running"]:
         raise HTTPException(status_code=409, detail="Pipeline already running")

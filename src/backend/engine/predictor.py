@@ -5,12 +5,94 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 import pandas as pd
 import numpy as np
 from datetime import datetime
-from data.sql_helpers import get_connection, save
-from engine.model import load_trained_model, FEATURE_COLS
+from data.sql_helpers import get_connection, save, merge_season_into_historical
+from engine.model import load_trained_model, load_training_data, train_final_model, FEATURE_COLS
+from engine.props.qb_props import load_props_model as load_qb_model, predict_current_week as predict_qb
+from engine.props.rb_props import load_props_model as load_rb_model, predict_current_week as predict_rb
+from engine.props.wr_props import load_props_model as load_wr_model, predict_current_week as predict_wr
 
 # ── Config ────────────────────────────────────────────────────────────────────
-WIN_PROB_SCALE = 25.0
-HOME_ADVANTAGE = 48.0
+WIN_PROB_SCALE  = 25.0
+HOME_ADVANTAGE  = 48.0
+SKILL_POSITIONS = {"QB", "RB", "WR", "TE"}
+
+TEAM_DISPLAY_NAMES = {
+    "Arizona Cardinals":   "ARI", "Atlanta Falcons":      "ATL", "Baltimore Ravens":   "BAL",
+    "Buffalo Bills":       "BUF", "Carolina Panthers":    "CAR", "Chicago Bears":      "CHI",
+    "Cincinnati Bengals":  "CIN", "Cleveland Browns":     "CLE", "Dallas Cowboys":     "DAL",
+    "Denver Broncos":      "DEN", "Detroit Lions":        "DET", "Green Bay Packers":  "GB",
+    "Houston Texans":      "HOU", "Indianapolis Colts":   "IND", "Jacksonville Jaguars": "JAX",
+    "Kansas City Chiefs":  "KC",  "Los Angeles Rams":     "LA",  "Los Angeles Chargers": "LAC",
+    "Las Vegas Raiders":   "LV",  "Miami Dolphins":       "MIA", "Minnesota Vikings":  "MIN",
+    "New England Patriots":"NE",  "New Orleans Saints":   "NO",  "New York Giants":    "NYG",
+    "New York Jets":       "NYJ", "Philadelphia Eagles":  "PHI", "Pittsburgh Steelers":"PIT",
+    "Seattle Seahawks":    "SEA", "San Francisco 49ers":  "SF",  "Tampa Bay Buccaneers":"TB",
+    "Tennessee Titans":    "TEN", "Washington Commanders":"WAS",
+}
+
+POSITION_WEIGHTS = {
+    "QB": 10.0, "WR": 2.0, "RB": 2.0, "TE": 1.5,
+    "T":   1.0, "G":  0.5, "C":  0.5,
+    "CB":  1.0, "S":  1.0, "LB": 0.8, "DE": 0.8, "DT": 0.5,
+}
+
+STATUS_SEVERITY = {
+    "Out": 1.0, "Doubtful": 0.75, "IR": 1.0,
+    "PUP": 1.0, "Suspended": 1.0, "Questionable": 0.25,
+}
+
+QB_OUT_STATUSES = {"Out", "Doubtful", "IR", "PUP"}
+
+
+# ── Injury scores ─────────────────────────────────────────────────────────────
+def build_injury_scores() -> dict:
+    """
+    Reads injuries_current and returns a dict keyed by team abbreviation:
+        { "KC": {"injury_score": 12.5, "qb_out": 0}, ... }
+
+    Position comes directly from ESPN via the updated injury_getter.py.
+    Falls back gracefully to zeros if the table is missing or empty.
+    """
+    try:
+        with get_connection() as conn:
+            inj = pd.read_sql("SELECT * FROM injuries_current", conn)
+    except Exception:
+        print("  Warning: could not load injuries_current, using zeros")
+        return {}
+
+    if inj.empty or "team_display" not in inj.columns:
+        print("  Warning: injuries_current empty or malformed, using zeros")
+        return {}
+
+    inj["team"] = inj["team_display"].map(TEAM_DISPLAY_NAMES)
+    inj = inj[inj["team"].notna()].copy()
+
+    # If position column missing (old data), fall back to roster join
+    if "position" not in inj.columns or inj["position"].isna().all():
+        try:
+            with get_connection() as conn:
+                rosters = pd.read_sql(
+                    "SELECT full_name, position FROM rosters_current", conn
+                )
+            inj = inj.merge(rosters, left_on="player_name", right_on="full_name", how="left")
+        except Exception:
+            inj["position"] = None
+
+    inj["pos_weight"] = inj["position"].map(POSITION_WEIGHTS).fillna(0.5)
+    inj["severity"]   = inj["status"].map(STATUS_SEVERITY).fillna(0.0)
+    inj["inj_score"]  = inj["pos_weight"] * inj["severity"]
+
+    scores = {}
+    for team, grp in inj.groupby("team"):
+        qb_rows = grp[grp["position"] == "QB"]
+        qb_out  = int(any(qb_rows["status"].isin(QB_OUT_STATUSES)))
+        scores[team] = {
+            "injury_score": round(float(grp["inj_score"].sum()), 2),
+            "qb_out":       qb_out,
+        }
+
+    print(f"  Injury scores built for {len(scores)} teams")
+    return scores
 
 
 # ── Load upcoming games ───────────────────────────────────────────────────────
@@ -31,7 +113,9 @@ def load_upcoming_games() -> pd.DataFrame:
 
 
 # ── Build feature vector for a single game ───────────────────────────────────
-def build_game_features(game: pd.Series) -> dict:
+def build_game_features(game: pd.Series, inj_scores: dict = None) -> dict:
+    inj_scores = inj_scores or {}
+
     with get_connection() as conn:
         elo = pd.read_sql("""
             SELECT team, elo_after
@@ -69,6 +153,17 @@ def build_game_features(game: pd.Series) -> dict:
             WHERE game_id = ?
         """, conn, params=(game["game_id"],))
 
+        def_ratings = pd.read_sql("""
+            SELECT dr.*
+            FROM defense_ratings dr
+            INNER JOIN (
+                SELECT team, MAX(season * 100 + week) AS max_key
+                FROM defense_ratings GROUP BY team
+            ) latest ON dr.team = latest.team
+              AND (dr.season * 100 + dr.week) = latest.max_key
+            WHERE dr.team IN (?, ?)
+        """, conn, params=(game["home_team"], game["away_team"]))
+
     home_elo = elo_map.get(game["home_team"], 1500)
     away_elo = elo_map.get(game["away_team"], 1500)
     elo_diff = home_elo - away_elo
@@ -81,6 +176,15 @@ def build_game_features(game: pd.Series) -> dict:
 
     hr = home_roll if isinstance(home_roll, pd.Series) else {}
     ar = away_roll if isinstance(away_roll, pd.Series) else {}
+
+    home_def_row = def_ratings[def_ratings["team"] == game["home_team"]]
+    away_def_row = def_ratings[def_ratings["team"] == game["away_team"]]
+
+    def get_def(row, col, default=0.0):
+        try:
+            return float(row.iloc[0][col]) if not row.empty and col in row.columns else default
+        except Exception:
+            return default
 
     is_dome   = 1 if not cond.empty and cond.iloc[0]["roof"] in ("dome", "closed") else 0
     high_wind = 1 if not cond.empty and float(cond.iloc[0]["wind"] or 0) > 15 else 0
@@ -102,30 +206,36 @@ def build_game_features(game: pd.Series) -> dict:
     home_rb_rec   = latest_pf(game["home_team"], "home_rb_rec_yards")
     away_rb_rec   = latest_pf(game["away_team"], "away_rb_rec_yards")
 
+    # Injury scores
+    home_inj = inj_scores.get(game["home_team"], {"injury_score": 0.0, "qb_out": 0})
+    away_inj = inj_scores.get(game["away_team"], {"injury_score": 0.0, "qb_out": 0})
+
     return {
-        "elo_diff":              elo_diff,
-        "rest_diff":             0.0,
-        "is_dome":               is_dome,
-        "high_wind":             high_wind,
-        "qb_epa_diff":           home_qb_epa      - away_qb_epa,
-        "wr_yards_diff":         home_wr_yards     - away_wr_yards,
-        "te_yards_diff":         home_te_yards     - away_te_yards,
-        "rb_rush_diff":          home_rb_rush      - away_rb_rush,
-        "rb_rec_diff":           home_rb_rec       - away_rb_rec,
-        "roll_pass_epa_diff":    get_roll(hr, "roll_passing_epa")   - get_roll(ar, "roll_passing_epa"),
-        "roll_rush_epa_diff":    get_roll(hr, "roll_rushing_epa")   - get_roll(ar, "roll_rushing_epa"),
-        "roll_pass_yards_diff":  get_roll(hr, "roll_passing_yards") - get_roll(ar, "roll_passing_yards"),
-        "roll_rush_yards_diff":  get_roll(hr, "roll_rushing_yards") - get_roll(ar, "roll_rushing_yards"),
-        "roll_def_sacks_diff":   get_roll(hr, "roll_def_sacks")     - get_roll(ar, "roll_def_sacks"),
-        "roll_def_ints_diff":    get_roll(hr, "roll_def_ints")      - get_roll(ar, "roll_def_ints"),
-        "roll_def_tfl_diff":     get_roll(hr, "roll_def_tfl")       - get_roll(ar, "roll_def_tfl"),
-        "roll_turnovers_diff":   get_roll(hr, "roll_turnovers")     - get_roll(ar, "roll_turnovers"),
-        "roll_penalty_diff":     get_roll(hr, "roll_penalty_yards") - get_roll(ar, "roll_penalty_yards"),
-        "roll_first_downs_diff": get_roll(hr, "roll_first_downs")   - get_roll(ar, "roll_first_downs"),
-        "injury_score_diff":     0.0,
-        "qb_out_diff":           0.0,
-        "home_qb_out":           0.0,
-        "away_qb_out":           0.0,
+        "elo_diff":                   elo_diff,
+        "rest_diff":                  0.0,
+        "is_dome":                    is_dome,
+        "high_wind":                  high_wind,
+        "qb_epa_diff":                home_qb_epa      - away_qb_epa,
+        "wr_yards_diff":              home_wr_yards     - away_wr_yards,
+        "te_yards_diff":              home_te_yards     - away_te_yards,
+        "rb_rush_diff":               home_rb_rush      - away_rb_rush,
+        "rb_rec_diff":                home_rb_rec       - away_rb_rec,
+        "roll_pass_epa_diff":         get_roll(hr, "roll_passing_epa")   - get_roll(ar, "roll_passing_epa"),
+        "roll_rush_epa_diff":         get_roll(hr, "roll_rushing_epa")   - get_roll(ar, "roll_rushing_epa"),
+        "roll_pass_yards_diff":       get_roll(hr, "roll_passing_yards") - get_roll(ar, "roll_passing_yards"),
+        "roll_rush_yards_diff":       get_roll(hr, "roll_rushing_yards") - get_roll(ar, "roll_rushing_yards"),
+        "roll_def_sacks_diff":        get_roll(hr, "roll_def_sacks")     - get_roll(ar, "roll_def_sacks"),
+        "roll_def_ints_diff":         get_roll(hr, "roll_def_ints")      - get_roll(ar, "roll_def_ints"),
+        "roll_def_tfl_diff":          get_roll(hr, "roll_def_tfl")       - get_roll(ar, "roll_def_tfl"),
+        "roll_turnovers_diff":        get_roll(hr, "roll_turnovers")     - get_roll(ar, "roll_turnovers"),
+        "roll_penalty_diff":          get_roll(hr, "roll_penalty_yards") - get_roll(ar, "roll_penalty_yards"),
+        "roll_first_downs_diff":      get_roll(hr, "roll_first_downs")   - get_roll(ar, "roll_first_downs"),
+        "roll_adj_def_pass_epa_diff": get_def(home_def_row, "roll_adj_def_pass_epa") - get_def(away_def_row, "roll_adj_def_pass_epa"),
+        "roll_adj_def_rush_epa_diff": get_def(home_def_row, "roll_adj_def_rush_epa") - get_def(away_def_row, "roll_adj_def_rush_epa"),
+        "injury_score_diff":          home_inj["injury_score"] - away_inj["injury_score"],
+        "qb_out_diff":                float(away_inj["qb_out"]) - float(home_inj["qb_out"]),
+        "home_qb_out":                float(home_inj["qb_out"]),
+        "away_qb_out":                float(away_inj["qb_out"]),
     }
 
 
@@ -140,15 +250,16 @@ def spread_to_win_prob(spread: float) -> float:
 def run_game_predictions() -> pd.DataFrame:
     base, meta = load_trained_model()
     upcoming   = load_upcoming_games()
+    inj_scores = build_injury_scores()
 
     if upcoming.empty:
-        print("No upcoming games found.")
+        print("  No upcoming games found.")
         return pd.DataFrame()
 
     rows = []
     for _, game in upcoming.iterrows():
         try:
-            features = build_game_features(game)
+            features = build_game_features(game, inj_scores)
             X = pd.DataFrame([features])[FEATURE_COLS].fillna(0)
 
             base_pred = base.predict(X)[0]
@@ -180,7 +291,7 @@ def run_game_predictions() -> pd.DataFrame:
                 "predicted_winner": predicted_winner,
                 "generated_at":     datetime.now().isoformat(),
             })
-            print(f"  {game['home_team']:4s} vs {game['away_team']:4s} — "
+            print(f"  {game['home_team']:4s} vs {game['away_team']:4s}  "
                   f"model: {model_spread:+.1f}  vegas: {vegas_spread or '?':>5}  "
                   f"gap: {spread_gap or '?'}")
 
@@ -190,57 +301,134 @@ def run_game_predictions() -> pd.DataFrame:
     df = pd.DataFrame(rows)
     if not df.empty:
         save(df, "weekly_predictions")
-        print(f"\nSaved {len(df)} game predictions.")
+        print(f"  Saved {len(df)} game predictions.")
     return df
 
 
 # ── Run props predictions ─────────────────────────────────────────────────────
 def run_props_predictions() -> None:
     try:
-        from engine.qb_props import predict_current_week as qb_predict, load_props_model as qb_load
-        qb_models = {t: qb_load(t) for t in ["passing_yards", "passing_tds", "attempts"]}
-        qb_preds  = qb_predict(qb_models)
+        qb_models = {t: load_qb_model(t) for t in ["passing_yards", "passing_tds", "attempts", "completions", "passing_interceptions"]}
+        qb_preds  = predict_qb(qb_models)
         if not qb_preds.empty:
             save(qb_preds, "qb_prop_predictions")
-            print(f"  QB props: {len(qb_preds)} predictions saved")
+            print(f"  QB props saved: {len(qb_preds)} rows")
         else:
             print("  QB props: no data")
     except Exception as e:
         print(f"  QB props failed: {e}")
 
     try:
-        from engine.rb_props import predict_current_week as rb_predict, load_props_model as rb_load
-        rb_models = {t: rb_load(t) for t in ["rushing_yards", "rushing_tds", "carries",
-                                               "receptions", "receiving_yards"]}
-        rb_preds  = rb_predict(rb_models)
+        rb_models = {t: load_rb_model(t) for t in ["rushing_yards", "rushing_tds", "carries", "receptions", "receiving_yards"]}
+        rb_preds  = predict_rb(rb_models)
         if not rb_preds.empty:
             save(rb_preds, "rb_prop_predictions")
-            print(f"  RB props: {len(rb_preds)} predictions saved")
+            print(f"  RB props saved: {len(rb_preds)} rows")
         else:
             print("  RB props: no data")
     except Exception as e:
         print(f"  RB props failed: {e}")
 
     try:
-        from engine.wr_props import predict_current_week as wr_predict, load_props_model as wr_load
-        wr_models = {t: wr_load(t) for t in ["receiving_yards", "receiving_tds",
-                                               "receptions", "targets"]}
-        wr_preds  = wr_predict(wr_models)
+        wr_models = {t: load_wr_model(t) for t in ["receiving_yards", "receiving_tds", "receptions", "targets"]}
+        wr_preds  = predict_wr(wr_models)
         if not wr_preds.empty:
             save(wr_preds, "wr_prop_predictions")
-            print(f"  WR props: {len(wr_preds)} predictions saved")
+            print(f"  WR props saved: {len(wr_preds)} rows")
         else:
             print("  WR props: no data")
     except Exception as e:
         print(f"  WR props failed: {e}")
 
 
-# ── Main entry point ──────────────────────────────────────────────────────────
+# ── Main entry point (full pipeline) ─────────────────────────────────────────
 def run_predictions() -> pd.DataFrame:
-    print("Running game predictions...")
-    df = run_game_predictions()
+    import nflreadpy as nfl
+    from nflreadpy.utils_date import get_current_season
+    from engine.elo_analyzer import elo_analyzer
+    from engine.defense import build_defense_ratings
+    from scripts.seed import build_rolling_stats, build_player_features
+    from data.injury_getter import fetch_injuries
+    from data.depth_chart_getter import get_all_depth_charts
 
-    print("\nRunning props predictions...")
+    season = get_current_season()
+    print(f"\n[1/8] Fetching {season} nflverse data...")
+    schedules    = nfl.load_schedules([season]).to_pandas()
+    player_stats = nfl.load_player_stats([season]).to_pandas()
+    player_stats = player_stats[player_stats["season_type"] == "REG"]
+    player_stats = player_stats[player_stats["position"].isin(SKILL_POSITIONS)]
+    team_stats   = nfl.load_team_stats(seasons=[season], summary_level="week").to_pandas()
+    rosters      = nfl.load_rosters([season]).to_pandas()
+    print(f"  {len(schedules)} games, {len(player_stats)} player rows, {len(rosters)} roster entries")
+
+    print("\n[2/8] Fetching injuries and depth charts...")
+    try:
+        injuries = fetch_injuries()
+        print(f"  {len(injuries)} injury entries")
+    except Exception as e:
+        print(f"  Injury fetch failed: {e}")
+        injuries = pd.DataFrame()
+
+    try:
+        depth_charts = get_all_depth_charts()
+        if not depth_charts.empty:
+            depth_charts["fetched_at"] = pd.Timestamp.now().isoformat()
+        print(f"  {len(depth_charts)} depth chart entries")
+    except Exception as e:
+        print(f"  Depth chart fetch failed: {e}")
+        depth_charts = pd.DataFrame()
+
+    print("\n[3/8] Saving current tables...")
+    with get_connection() as conn:
+        schedules.to_sql("schedules_current",       conn, if_exists="replace", index=False)
+        player_stats.to_sql("player_stats_current", conn, if_exists="replace", index=False)
+        team_stats.to_sql("team_stats_current",     conn, if_exists="replace", index=False)
+        rosters.to_sql("rosters_current",           conn, if_exists="replace", index=False)
+        if not injuries.empty:
+            injuries.to_sql("injuries_current",     conn, if_exists="replace", index=False)
+        if not depth_charts.empty:
+            depth_charts.to_sql("depth_charts_current", conn, if_exists="replace", index=False)
+    print("  Done")
+
+    print("\n[4/8] Merging completed games into historical tables...")
+    n = merge_season_into_historical(schedules)
+    print(f"  {n} new games merged")
+
+    print("\n[5/8] Rebuilding ELO + features...")
+    elo = elo_analyzer()
+    elo.build_history()
+
+    with get_connection() as conn:
+        existing_rolling = pd.read_sql("SELECT DISTINCT game_id FROM team_rolling_stats", conn)["game_id"].tolist()
+        existing_player  = pd.read_sql("SELECT DISTINCT game_id FROM player_features",    conn)["game_id"].tolist()
+
+    new_rolling = [g for g in schedules["game_id"] if g not in existing_rolling]
+    new_player  = [g for g in schedules["game_id"] if g not in existing_player]
+
+    if new_rolling:
+        save(build_rolling_stats(), "team_rolling_stats")
+        print("  Rolling stats rebuilt")
+    else:
+        print("  Rolling stats up to date")
+
+    if new_player:
+        save(build_player_features(), "player_features")
+        print("  Player features rebuilt")
+    else:
+        print("  Player features up to date")
+
+    print("\n[6/8] Retraining spread model...")
+    train_final_model(load_training_data())
+
+    print("\n[7/8] Rebuilding defense ratings (current season)...")
+    def_ratings = build_defense_ratings(seasons=[season])
+    save(def_ratings, "defense_ratings")
+    print(f"  Defense ratings updated: {len(def_ratings):,} rows")
+
+    print("\n[8/8] Running predictions...")
+    print("  Game picks...")
+    df = run_game_predictions()
+    print("  Props...")
     run_props_predictions()
 
     return df
@@ -249,9 +437,9 @@ def run_predictions() -> pd.DataFrame:
 if __name__ == "__main__":
     df = run_predictions()
     if not df.empty:
-        print(f"\n{'Team':<20} {'Spread':>8} {'Vegas':>8} {'Gap':>6} {'Win%':>6}")
-        print("-" * 50)
+        print(f"\n{'Home':<6} {'Away':<6} {'Model':>8} {'Vegas':>8} {'Gap':>6} {'Win%':>6}")
+        print("-" * 44)
         for _, r in df.iterrows():
-            print(f"{r['home_team']:4s} vs {r['away_team']:4s}        "
-                  f"{r['model_spread']:>+7.1f}  {str(r['vegas_spread'] or '?'):>7}  "
+            print(f"{r['home_team']:<6} {r['away_team']:<6} "
+                  f"{r['model_spread']:>+8.1f}  {str(r['vegas_spread'] or '?'):>7}  "
                   f"{str(r['spread_gap'] or '?'):>5}  {r['home_win_prob']*100:>5.1f}%")

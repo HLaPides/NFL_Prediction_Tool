@@ -1,4 +1,4 @@
-import sys
+\import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
@@ -8,9 +8,7 @@ from data.sql_helpers import save
 
 ESPN_INJURIES_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/injuries"
 
-# Statuses that mean a player is unlikely to play
-UNLIKELY_STATUSES = {"Out", "Doubtful", "IR", "PUP", "Suspended"}
-# Statuses that mean a player is uncertain
+UNLIKELY_STATUSES  = {"Out", "Doubtful", "IR", "PUP", "Suspended"}
 UNCERTAIN_STATUSES = {"Questionable"}
 
 
@@ -23,13 +21,15 @@ def fetch_injuries() -> pd.DataFrame:
     for team in data.get("injuries", []):
         team_name = team.get("displayName", "")
         for injury in team.get("injuries", []):
-            athlete = injury.get("athlete", {})
+            athlete  = injury.get("athlete", {})
+            position = athlete.get("position", {})
             rows.append({
-                "team_display":  team_name,
-                "player_name":   athlete.get("displayName"),
-                "status":        injury.get("status"),
-                "comment":       injury.get("shortComment", ""),
-                "date":          injury.get("date", ""),
+                "team_display": team_name,
+                "player_name":  athlete.get("displayName"),
+                "position":     position.get("abbreviation") if isinstance(position, dict) else None,
+                "status":       injury.get("status"),
+                "comment":      injury.get("shortComment", ""),
+                "date":         injury.get("date", ""),
             })
 
     return pd.DataFrame(rows)
@@ -37,11 +37,10 @@ def fetch_injuries() -> pd.DataFrame:
 
 def get_team_injury_flags(injuries: pd.DataFrame, team_display: str) -> dict:
     team_inj = injuries[injuries["team_display"] == team_display]
-
     return {
-        "has_out":          any(team_inj["status"].isin(UNLIKELY_STATUSES)),
-        "has_questionable": any(team_inj["status"].isin(UNCERTAIN_STATUSES)),
-        "out_players":      team_inj[team_inj["status"].isin(UNLIKELY_STATUSES)]["player_name"].tolist(),
+        "has_out":              any(team_inj["status"].isin(UNLIKELY_STATUSES)),
+        "has_questionable":     any(team_inj["status"].isin(UNCERTAIN_STATUSES)),
+        "out_players":          team_inj[team_inj["status"].isin(UNLIKELY_STATUSES)]["player_name"].tolist(),
         "questionable_players": team_inj[team_inj["status"].isin(UNCERTAIN_STATUSES)]["player_name"].tolist(),
     }
 
@@ -60,10 +59,10 @@ if __name__ == "__main__":
     save(df, "injuries_current")
     print(f"Saved {len(df)} injury entries")
 
-    print(f"\nStatus breakdown:")
+    print("\nStatus breakdown:")
     print(df["status"].value_counts().to_string())
 
-    print(f"\nSample Out/Doubtful players:")
+    print("\nSample Out/Doubtful players:")
     print(df[df["status"].isin(UNLIKELY_STATUSES)][
-        ["team_display", "player_name", "status", "comment"]
+        ["team_display", "player_name", "position", "status", "comment"]
     ].head(10).to_string(index=False))

@@ -82,11 +82,17 @@ def load_pbp(seasons: list = None) -> pd.DataFrame:
     pbp = pbp[~wp_valid | not_garbage].copy()
 
     print(f"  {len(pbp):,} qualifying plays loaded")
-    return pbp[["season", "week", "game_id", "posteam", "defteam",
-                "play_type", "epa", "wp", "down", "ydstogo",
-                "yardline_100", "receiver_player_id",
-                "rusher_player_id", "passer_player_id",
-                "receiver_position"]].copy()
+    # receiver_position is not in PBP — we use receiver_id and join to rosters
+    # to get position. Keep receiver_id for the join.
+    keep = ["season", "week", "game_id", "posteam", "defteam",
+            "play_type", "epa", "wp", "down", "ydstogo",
+            "yardline_100", "receiver_player_id",
+            "rusher_player_id", "passer_player_id"]
+    # receiver_player_id may also be named receiver_id depending on version
+    for alt in ["receiver_id", "receiver_player_id"]:
+        if alt in pbp.columns and alt not in keep:
+            keep.append(alt)
+    return pbp[[c for c in keep if c in pbp.columns]].copy()
 
 
 # ── Calculate offensive baseline ──────────────────────────────────────────────
@@ -161,28 +167,40 @@ def build_receiver_position_baselines(pbp: pd.DataFrame) -> pd.DataFrame:
     """
     Calculate each team's offensive EPA/play when targeting WR, TE, and RB.
 
-    Why split by receiver position?
-    A defense that's great against WRs but terrible against TEs (e.g. Tampa 2
-    coverage) looks the same in aggregate as one that's mediocre against both.
-    For our props models, this matters enormously:
-    - WR props should use WR-specific defensive EPA allowed
-    - TE props would use TE-specific defensive EPA allowed
-    - RB receiving props should use RB-specific defensive EPA allowed
-
-    Why only pass plays?
-    Receiver position only applies to passing plays. On run plays, we use
-    rusher position which is handled separately.
+    receiver_position is not directly in nflverse PBP. We join to rosters
+    using receiver_player_id to get each receiver's position.
     """
     pass_plays = pbp[pbp["play_type"] == "pass"].copy()
 
-    # Normalize receiver positions — nflverse uses various position codes
-    # WR = wide receiver, TE = tight end, RB = running back catching passes
-    pass_plays["rec_pos_group"] = pass_plays["receiver_position"].map(
-        lambda p: "WR" if p == "WR"
-             else "TE" if p == "TE"
-             else "RB" if p in ("RB", "FB", "HB")
-             else "other"
-    ).fillna("other")
+    # Get receiver id column — may be receiver_player_id or receiver_id
+    rec_id_col = "receiver_player_id" if "receiver_player_id" in pass_plays.columns                  else "receiver_id" if "receiver_id" in pass_plays.columns else None
+
+    if rec_id_col is None or pass_plays[rec_id_col].isna().all():
+        # No receiver ID available — return empty frame, caller handles fillna
+        print("  Warning: no receiver_id column found, skipping position splits")
+        return pd.DataFrame(columns=["season","week","team",
+                                     "roll_off_wr_epa","roll_off_te_epa","roll_off_rb_rec_epa"])
+
+    # Load rosters to get position for each receiver_id
+    seasons = sorted(pass_plays["season"].unique().tolist())
+    try:
+        rosters = nfl.load_rosters(seasons).to_pandas()
+        # Keep gsis_id (nflverse player id) and position
+        id_col = "gsis_id" if "gsis_id" in rosters.columns else                  "player_id" if "player_id" in rosters.columns else None
+        if id_col:
+            pos_map = rosters.dropna(subset=[id_col]).set_index(id_col)["position"].to_dict()
+            pass_plays["rec_pos_group"] = pass_plays[rec_id_col].map(pos_map).map(
+                lambda p: "WR" if p == "WR"
+                     else "TE" if p == "TE"
+                     else "RB" if p in ("RB", "FB", "HB")
+                     else "other"
+            ).fillna("other")
+        else:
+            pass_plays["rec_pos_group"] = "other"
+    except Exception as e:
+        print(f"  Warning: roster join failed ({e}), skipping position splits")
+        return pd.DataFrame(columns=["season","week","team",
+                                     "roll_off_wr_epa","roll_off_te_epa","roll_off_rb_rec_epa"])
 
     pass_plays = pass_plays[pass_plays["rec_pos_group"] != "other"].copy()
 
@@ -259,12 +277,28 @@ def build_raw_defense(pbp: pd.DataFrame) -> pd.DataFrame:
 
     # Receiver-position defensive EPA
     pass_plays = pbp[pbp["play_type"] == "pass"].copy()
-    pass_plays["rec_pos_group"] = pass_plays["receiver_position"].map(
-        lambda p: "WR" if p == "WR"
-             else "TE" if p == "TE"
-             else "RB" if p in ("RB", "FB", "HB")
-             else "other"
-    ).fillna("other")
+    rec_id_col = "receiver_player_id" if "receiver_player_id" in pass_plays.columns                  else "receiver_id" if "receiver_id" in pass_plays.columns else None
+
+    if rec_id_col and not pass_plays[rec_id_col].isna().all():
+        try:
+            seasons = sorted(pass_plays["season"].unique().tolist())
+            rosters = nfl.load_rosters(seasons).to_pandas()
+            id_col  = "gsis_id" if "gsis_id" in rosters.columns else                       "player_id" if "player_id" in rosters.columns else None
+            if id_col:
+                pos_map = rosters.dropna(subset=[id_col]).set_index(id_col)["position"].to_dict()
+                pass_plays["rec_pos_group"] = pass_plays[rec_id_col].map(pos_map).map(
+                    lambda p: "WR" if p == "WR"
+                         else "TE" if p == "TE"
+                         else "RB" if p in ("RB","FB","HB")
+                         else "other"
+                ).fillna("other")
+            else:
+                pass_plays["rec_pos_group"] = "other"
+        except Exception as e:
+            print(f"  Warning: roster join failed ({e})")
+            pass_plays["rec_pos_group"] = "other"
+    else:
+        pass_plays["rec_pos_group"] = "other"
     pass_plays = pass_plays[pass_plays["rec_pos_group"] != "other"].copy()
 
     def_by_pos = (
@@ -448,24 +482,6 @@ def build_rolling_defense(def_adj: pd.DataFrame) -> pd.DataFrame:
 
 # ── Season defense rank ───────────────────────────────────────────────────────
 def add_season_ranks(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Add within-season percentile ranks for each defensive metric.
-
-    Why add ranks?
-    The props models currently use `def_rank` which is a simple ordinal rank
-    (1-32) based on raw yards allowed. We replace this with EPA-based ranks,
-    separately for pass and rush defense. Rank 1 = best defense (lowest EPA
-    allowed), rank 32 = worst defense (highest EPA allowed).
-
-    Why season-level ranks?
-    The XGBoost model needs to understand "this defense is elite this season"
-    vs "this defense is average." A season-level rank captures this relative
-    quality better than week-to-week fluctuations in raw EPA.
-
-    The rank is computed on the rolling (pre-game) rating, so it represents
-    "how good is this defense going into this game relative to other defenses
-    this season" — exactly what we want.
-    """
     for col, rank_col in [
         ("roll_adj_def_pass_epa", "pass_def_rank"),
         ("roll_adj_def_rush_epa", "rush_def_rank"),
@@ -473,12 +489,24 @@ def add_season_ranks(df: pd.DataFrame) -> pd.DataFrame:
         ("roll_adj_def_te_epa",   "te_def_rank"),
         ("roll_adj_def_rb_epa",   "rb_def_rank"),
     ]:
-        # ascending=True: lower EPA allowed = better defense = lower rank number
-        df[rank_col] = df.groupby("season")[col].rank(ascending=True, method="min")
+        # Get the last rolling value per team per season
+        season_summary = (
+            df.sort_values(["season", "team", "week"])
+              .groupby(["season", "team"])[col]
+              .last()
+              .reset_index()
+        )
+        # Rank across the 32 teams within each season
+        season_summary[rank_col] = (
+            season_summary.groupby("season")[col]
+                          .rank(ascending=True, method="min")
+        )
+        # Broadcast rank back to every row for that team+season
+        df = df.merge(season_summary[["season", "team", rank_col]],
+                      on=["season", "team"], how="left")
         df[rank_col] = df[rank_col].fillna(16)
 
     return df
-
 
 # ── Main build function ───────────────────────────────────────────────────────
 def build_defense_ratings(seasons: list = None) -> pd.DataFrame:

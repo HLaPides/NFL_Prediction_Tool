@@ -132,7 +132,11 @@ def load_training_data() -> pd.DataFrame:
                 ar.roll_first_downs    AS away_roll_first_downs,
                 ar.roll_penalty_yards  AS away_roll_penalty_yards,
                 ar.roll_avg_margin     AS away_roll_avg_margin,
-                ar.roll_margin_trend   AS away_roll_margin_trend
+                ar.roll_margin_trend   AS away_roll_margin_trend,
+                hd.roll_adj_def_pass_epa AS home_adj_def_pass_epa,
+                hd.roll_adj_def_rush_epa AS home_adj_def_rush_epa,
+                ad.roll_adj_def_pass_epa AS away_adj_def_pass_epa,
+                ad.roll_adj_def_rush_epa AS away_adj_def_rush_epa
             FROM schedules s
             JOIN elo_history h  ON h.game_id = s.game_id AND h.team = s.home_team
             JOIN elo_history a  ON a.game_id = s.game_id AND a.team = s.away_team
@@ -141,31 +145,34 @@ def load_training_data() -> pd.DataFrame:
             LEFT JOIN game_conditions c  ON c.game_id = s.game_id
             LEFT JOIN team_rolling_stats hr ON hr.game_id = s.game_id AND hr.team = s.home_team
             LEFT JOIN team_rolling_stats ar ON ar.game_id = s.game_id AND ar.team = s.away_team
+            LEFT JOIN defense_ratings hd ON hd.game_id = s.game_id AND hd.team = s.home_team
+            LEFT JOIN defense_ratings ad ON ad.game_id = s.game_id AND ad.team = s.away_team
             WHERE s.game_type IN ('REG', 'WC', 'DIV', 'CON', 'SB')
               AND s.result IS NOT NULL
               AND s.season >= ?
             ORDER BY s.season, s.week
         """, conn, params=(MIN_SEASON,))
 
-    df["qb_epa_diff"]           = df["home_qb_epa"]            - df["away_qb_epa"]
-    df["wr_yards_diff"]         = df["home_wr_yards"]           - df["away_wr_yards"]
-    df["te_yards_diff"]         = df["home_te_yards"]           - df["away_te_yards"]
-    df["rb_rush_diff"]          = df["home_rb_rush_yards"]      - df["away_rb_rush_yards"]
-    df["rb_rec_diff"]           = df["home_rb_rec_yards"]       - df["away_rb_rec_yards"]
-    df["roll_pass_epa_diff"]    = df["home_roll_pass_epa"]      - df["away_roll_pass_epa"]
-    df["roll_rush_epa_diff"]    = df["home_roll_rush_epa"]      - df["away_roll_rush_epa"]
-    df["roll_pass_yards_diff"]  = df["home_roll_pass_yards"]    - df["away_roll_pass_yards"]
-    df["roll_rush_yards_diff"]  = df["home_roll_rush_yards"]    - df["away_roll_rush_yards"]
-    df["roll_def_sacks_diff"]   = df["home_roll_def_sacks"]     - df["away_roll_def_sacks"]
-    df["roll_def_ints_diff"]    = df["home_roll_def_ints"]      - df["away_roll_def_ints"]
-    df["roll_def_tfl_diff"]     = df["home_roll_def_tfl"]       - df["away_roll_def_tfl"]
-    df["roll_turnovers_diff"]   = df["home_roll_turnovers"]     - df["away_roll_turnovers"]
-    df["roll_first_downs_diff"] = df["home_roll_first_downs"]   - df["away_roll_first_downs"]
-    df["roll_penalty_diff"]     = df["home_roll_penalty_yards"] - df["away_roll_penalty_yards"]
-    df["roll_avg_margin_diff"]  = df["home_roll_avg_margin"]    - df["away_roll_avg_margin"]
-    df["roll_margin_trend_diff"]= df["home_roll_margin_trend"]  - df["away_roll_margin_trend"]
+    df["qb_epa_diff"]                = df["home_qb_epa"]            - df["away_qb_epa"]
+    df["wr_yards_diff"]              = df["home_wr_yards"]           - df["away_wr_yards"]
+    df["te_yards_diff"]              = df["home_te_yards"]           - df["away_te_yards"]
+    df["rb_rush_diff"]               = df["home_rb_rush_yards"]      - df["away_rb_rush_yards"]
+    df["rb_rec_diff"]                = df["home_rb_rec_yards"]       - df["away_rb_rec_yards"]
+    df["roll_pass_epa_diff"]         = df["home_roll_pass_epa"]      - df["away_roll_pass_epa"]
+    df["roll_rush_epa_diff"]         = df["home_roll_rush_epa"]      - df["away_roll_rush_epa"]
+    df["roll_pass_yards_diff"]       = df["home_roll_pass_yards"]    - df["away_roll_pass_yards"]
+    df["roll_rush_yards_diff"]       = df["home_roll_rush_yards"]    - df["away_roll_rush_yards"]
+    df["roll_def_sacks_diff"]        = df["home_roll_def_sacks"]     - df["away_roll_def_sacks"]
+    df["roll_def_ints_diff"]         = df["home_roll_def_ints"]      - df["away_roll_def_ints"]
+    df["roll_def_tfl_diff"]          = df["home_roll_def_tfl"]       - df["away_roll_def_tfl"]
+    df["roll_turnovers_diff"]        = df["home_roll_turnovers"]     - df["away_roll_turnovers"]
+    df["roll_first_downs_diff"]      = df["home_roll_first_downs"]   - df["away_roll_first_downs"]
+    df["roll_penalty_diff"]          = df["home_roll_penalty_yards"] - df["away_roll_penalty_yards"]
+    df["roll_avg_margin_diff"]       = df["home_roll_avg_margin"]    - df["away_roll_avg_margin"]
+    df["roll_margin_trend_diff"]     = df["home_roll_margin_trend"]  - df["away_roll_margin_trend"]
+    df["roll_adj_def_pass_epa_diff"] = df["home_adj_def_pass_epa"].fillna(0) - df["away_adj_def_pass_epa"].fillna(0)
+    df["roll_adj_def_rush_epa_diff"] = df["home_adj_def_rush_epa"].fillna(0) - df["away_adj_def_rush_epa"].fillna(0)
 
-    # Merge injury features (2015+, zero-filled earlier)
     inj = build_injury_features()
     df  = df.merge(inj, on="game_id", how="left")
     for col in ["home_injury_score", "away_injury_score",
@@ -196,6 +203,8 @@ FEATURE_COLS = [
     "roll_turnovers_diff",
     "roll_penalty_diff",
     "roll_first_downs_diff",
+    "roll_adj_def_pass_epa_diff",
+    "roll_adj_def_rush_epa_diff",
     "injury_score_diff",
     "qb_out_diff",
     "home_qb_out",
@@ -307,10 +316,6 @@ def calculate_edges(df: pd.DataFrame,
 
 
 def apply_sharp_filter(edges: pd.DataFrame) -> pd.DataFrame:
-    """
-    Post-filter: only keep bets where sharp money agrees with model direction.
-    Games with no line movement data pass through unfiltered.
-    """
     with get_connection() as conn:
         lm = pd.read_sql("""
             SELECT game_id, spread_move, sharp_home, sharp_away
@@ -441,7 +446,7 @@ def load_trained_model() -> tuple:
 if __name__ == "__main__":
     print("Loading training data...")
     df = load_training_data()
-    print(f"Loaded {len(df)} games ({df['season'].min()}–{df['season'].max()})")
+    print(f"Loaded {len(df)} games ({df['season'].min()}-{df['season'].max()})")
     print(f"Features: {len(FEATURE_COLS)}")
 
     print("\nTraining final model on all data...")

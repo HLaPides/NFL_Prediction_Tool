@@ -8,8 +8,10 @@ from nflreadpy.utils_date import get_current_season
 from data.sql_helpers import save, get_connection, merge_season_into_historical, load_upcoming_games
 from data.depth_chart_getter import get_all_depth_charts
 from data.injury_getter import fetch_injuries
-from engine.elo import build_elo_history
+from engine.elo_analyzer import elo_analyzer
 from engine.model import load_training_data, train_final_model
+from engine.defense import build_defense_ratings
+from engine.predictor import run_predictions
 from scripts.seed import build_rolling_stats, build_player_features
 
 SKILL_POSITIONS = {"QB", "RB", "WR", "TE"}
@@ -21,7 +23,7 @@ def get_schedules(season: int) -> pd.DataFrame:
 
 def get_player_stats(season: int) -> pd.DataFrame:
     df = nfl.load_player_stats([season]).to_pandas()
-    df = df[df["season_type"] == "REG"]   # exclude preseason
+    df = df[df["season_type"] == "REG"]
     return df[df["position"].isin(SKILL_POSITIONS)]
 
 def get_team_stats(season: int) -> pd.DataFrame:
@@ -43,7 +45,7 @@ def run_weekly_update() -> pd.DataFrame:
     print(f"\nWeekly update — {season} season")
     print("=" * 40)
 
-    print("\n[1/7] Fetching nflverse data...")
+    print("\n[1/9] Fetching nflverse data...")
     schedules    = get_schedules(season)
     player_stats = get_player_stats(season)
     team_stats   = get_team_stats(season)
@@ -51,15 +53,15 @@ def run_weekly_update() -> pd.DataFrame:
     print(f"  {len(schedules)} games, {len(player_stats)} player rows, "
           f"{len(team_stats)} team rows, {len(rosters)} roster entries")
 
-    print("\n[2/7] Fetching ESPN depth charts...")
+    print("\n[2/9] Fetching ESPN depth charts...")
     depth_charts = get_depth_charts()
     print(f"  {len(depth_charts)} entries ({depth_charts['team'].nunique()} teams)")
 
-    print("\n[3/7] Fetching injury report...")
+    print("\n[3/9] Fetching injury report...")
     injuries = fetch_injuries()
     print(f"  {len(injuries)} injury entries")
 
-    print("\n[4/7] Saving current tables...")
+    print("\n[4/9] Saving current tables...")
     with get_connection() as conn:
         schedules.to_sql("schedules_current",       conn, if_exists="replace", index=False)
         player_stats.to_sql("player_stats_current", conn, if_exists="replace", index=False)
@@ -69,12 +71,13 @@ def run_weekly_update() -> pd.DataFrame:
         injuries.to_sql("injuries_current",         conn, if_exists="replace", index=False)
     print("  Done")
 
-    print("\n[5/7] Merging completed games into historical tables...")
+    print("\n[5/9] Merging completed games into historical tables...")
     n = merge_season_into_historical(schedules)
     print(f"  {n} new games merged")
 
-    print("\n[6/7] Rebuilding ELO + features...")
-    ratings, _ = build_elo_history()
+    print("\n[6/9] Rebuilding ELO + features...")
+    elo = elo_analyzer()
+    ratings, _ = elo.build_history()
     print(f"  ELO rebuilt for {len(ratings)} teams")
 
     with get_connection() as conn:
@@ -102,10 +105,18 @@ def run_weekly_update() -> pd.DataFrame:
     else:
         print("  Player features up to date")
 
-    print("\n[7/7] Retraining model...")
+    print("\n[7/9] Retraining spread model...")
     df = load_training_data()
     train_final_model(df)
     print(f"  Model retrained on {len(df)} games")
+
+    print("\n[8/9] Rebuilding defense ratings...")
+    def_ratings = build_defense_ratings()
+    save(def_ratings, "defense_ratings")
+    print(f"  Defense ratings updated: {len(def_ratings):,} rows")
+
+    print("\n[9/9] Running predictions (picks + props)...")
+    run_predictions()
 
     upcoming = load_upcoming_games(schedules)
     print(f"\nWeekly update complete — {len(upcoming)} upcoming games ready")
