@@ -15,6 +15,8 @@ from engine.props.wr_props import load_props_model as load_wr_model, predict_cur
 WIN_PROB_SCALE  = 25.0
 HOME_ADVANTAGE  = 48.0
 SKILL_POSITIONS = {"QB", "RB", "WR", "TE"}
+CLOSE_GAME_MARGIN = 7
+CLUTCH_ROLL       = 8
 
 TEAM_DISPLAY_NAMES = {
     "Arizona Cardinals":   "ARI", "Atlanta Falcons":      "ATL", "Baltimore Ravens":   "BAL",
@@ -44,15 +46,55 @@ STATUS_SEVERITY = {
 QB_OUT_STATUSES = {"Out", "Doubtful", "IR", "PUP"}
 
 
+# ── Clutch scores ─────────────────────────────────────────────────────────────
+def build_clutch_scores() -> dict:
+    """
+    Compute rolling close-game win rate per team from historical schedules.
+    Returns { team: clutch_rate } using the last CLUTCH_ROLL games.
+    Falls back to 0.5 (league average) if insufficient data.
+    """
+    try:
+        with get_connection() as conn:
+            games = pd.read_sql("""
+                SELECT game_id, season, week, home_team, away_team, result
+                FROM schedules
+                WHERE game_type IN ('REG', 'WC', 'DIV', 'CON', 'SB')
+                  AND result IS NOT NULL
+                ORDER BY season, week
+            """, conn)
+    except Exception as e:
+        print(f"  Clutch scores: failed to load ({e}), using 0.5")
+        return {}
+
+    home_rows = games[["season", "week", "home_team", "result"]].copy()
+    home_rows = home_rows.rename(columns={"home_team": "team"})
+    home_rows["team_won"] = (home_rows["result"] > 0).astype(float)
+    home_rows["margin"]   = home_rows["result"].abs()
+
+    away_rows = games[["season", "week", "away_team", "result"]].copy()
+    away_rows = away_rows.rename(columns={"away_team": "team"})
+    away_rows["team_won"] = (away_rows["result"] < 0).astype(float)
+    away_rows["margin"]   = away_rows["result"].abs()
+
+    all_rows = pd.concat([home_rows, away_rows], ignore_index=True)
+    all_rows = all_rows.sort_values(["team", "season", "week"]).reset_index(drop=True)
+
+    all_rows["is_close"]  = (all_rows["margin"] <= CLOSE_GAME_MARGIN).astype(float)
+    all_rows["close_win"] = all_rows["is_close"] * all_rows["team_won"]
+
+    scores = {}
+    for team, grp in all_rows.groupby("team"):
+        last_n       = grp.tail(CLUTCH_ROLL)
+        close_games  = last_n["is_close"].sum()
+        close_wins   = last_n["close_win"].sum()
+        scores[team] = round(close_wins / close_games, 3) if close_games >= 3 else 0.5
+
+    print(f"  Clutch scores built for {len(scores)} teams")
+    return scores
+
+
 # ── Injury scores ─────────────────────────────────────────────────────────────
 def build_injury_scores() -> dict:
-    """
-    Reads injuries_current and returns a dict keyed by team abbreviation:
-        { "KC": {"injury_score": 12.5, "qb_out": 0}, ... }
-
-    Position comes directly from ESPN via the updated injury_getter.py.
-    Falls back gracefully to zeros if the table is missing or empty.
-    """
     try:
         with get_connection() as conn:
             inj = pd.read_sql("SELECT * FROM injuries_current", conn)
@@ -67,13 +109,10 @@ def build_injury_scores() -> dict:
     inj["team"] = inj["team_display"].map(TEAM_DISPLAY_NAMES)
     inj = inj[inj["team"].notna()].copy()
 
-    # If position column missing (old data), fall back to roster join
     if "position" not in inj.columns or inj["position"].isna().all():
         try:
             with get_connection() as conn:
-                rosters = pd.read_sql(
-                    "SELECT full_name, position FROM rosters_current", conn
-                )
+                rosters = pd.read_sql("SELECT full_name, position FROM rosters_current", conn)
             inj = inj.merge(rosters, left_on="player_name", right_on="full_name", how="left")
         except Exception:
             inj["position"] = None
@@ -113,8 +152,11 @@ def load_upcoming_games() -> pd.DataFrame:
 
 
 # ── Build feature vector for a single game ───────────────────────────────────
-def build_game_features(game: pd.Series, inj_scores: dict = None) -> dict:
-    inj_scores = inj_scores or {}
+def build_game_features(game: pd.Series,
+                        inj_scores: dict = None,
+                        clutch_scores: dict = None) -> dict:
+    inj_scores    = inj_scores    or {}
+    clutch_scores = clutch_scores or {}
 
     with get_connection() as conn:
         elo = pd.read_sql("""
@@ -206,9 +248,10 @@ def build_game_features(game: pd.Series, inj_scores: dict = None) -> dict:
     home_rb_rec   = latest_pf(game["home_team"], "home_rb_rec_yards")
     away_rb_rec   = latest_pf(game["away_team"], "away_rb_rec_yards")
 
-    # Injury scores
-    home_inj = inj_scores.get(game["home_team"], {"injury_score": 0.0, "qb_out": 0})
-    away_inj = inj_scores.get(game["away_team"], {"injury_score": 0.0, "qb_out": 0})
+    home_inj    = inj_scores.get(game["home_team"],    {"injury_score": 0.0, "qb_out": 0})
+    away_inj    = inj_scores.get(game["away_team"],    {"injury_score": 0.0, "qb_out": 0})
+    home_clutch = clutch_scores.get(game["home_team"], 0.5)
+    away_clutch = clutch_scores.get(game["away_team"], 0.5)
 
     return {
         "elo_diff":                   elo_diff,
@@ -236,6 +279,7 @@ def build_game_features(game: pd.Series, inj_scores: dict = None) -> dict:
         "qb_out_diff":                float(away_inj["qb_out"]) - float(home_inj["qb_out"]),
         "home_qb_out":                float(home_inj["qb_out"]),
         "away_qb_out":                float(away_inj["qb_out"]),
+        "clutch_rate_diff":           home_clutch - away_clutch,
     }
 
 
@@ -248,9 +292,10 @@ def spread_to_win_prob(spread: float) -> float:
 
 # ── Run game predictions ──────────────────────────────────────────────────────
 def run_game_predictions() -> pd.DataFrame:
-    base, meta = load_trained_model()
-    upcoming   = load_upcoming_games()
-    inj_scores = build_injury_scores()
+    base, meta    = load_trained_model()
+    upcoming      = load_upcoming_games()
+    inj_scores    = build_injury_scores()
+    clutch_scores = build_clutch_scores()
 
     if upcoming.empty:
         print("  No upcoming games found.")
@@ -259,7 +304,7 @@ def run_game_predictions() -> pd.DataFrame:
     rows = []
     for _, game in upcoming.iterrows():
         try:
-            features = build_game_features(game, inj_scores)
+            features = build_game_features(game, inj_scores, clutch_scores)
             X = pd.DataFrame([features])[FEATURE_COLS].fillna(0)
 
             base_pred = base.predict(X)[0]

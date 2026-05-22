@@ -17,6 +17,8 @@ EDGE_THRESHOLD    = 2.5
 MIN_TRAIN_SEASONS = 5
 UNIT_BET          = 100
 ODDS              = -110
+CLOSE_GAME_MARGIN = 7
+CLUTCH_ROLL       = 8
 
 POSITION_WEIGHTS = {
     'QB': 10.0,
@@ -86,6 +88,79 @@ def build_injury_features() -> pd.DataFrame:
 
     return games[["game_id", "home_injury_score", "away_injury_score",
                    "injury_score_diff", "home_qb_out", "away_qb_out", "qb_out_diff"]]
+
+
+# ── Clutch feature builder ────────────────────────────────────────────────────
+def build_clutch_features() -> pd.DataFrame:
+    """
+    Rolling close-game win rate per team — win rate in games decided
+    by CLOSE_GAME_MARGIN points or fewer over the last CLUTCH_ROLL games.
+    Merged back to game level as home_clutch_rate and away_clutch_rate.
+    Shift(1) applied to prevent leakage.
+    """
+    with get_connection() as conn:
+        games = pd.read_sql("""
+            SELECT game_id, season, week, home_team, away_team, result
+            FROM schedules
+            WHERE game_type IN ('REG', 'WC', 'DIV', 'CON', 'SB')
+              AND result IS NOT NULL
+            ORDER BY season, week
+        """, conn)
+
+    # Build per-team records — one row per team per game
+    home_rows = games[["game_id", "season", "week", "home_team", "result"]].copy()
+    home_rows = home_rows.rename(columns={"home_team": "team"})
+    home_rows["team_won"] = (home_rows["result"] > 0).astype(float)
+    home_rows["margin"]   = home_rows["result"].abs()
+
+    away_rows = games[["game_id", "season", "week", "away_team", "result"]].copy()
+    away_rows = away_rows.rename(columns={"away_team": "team"})
+    away_rows["team_won"] = (away_rows["result"] < 0).astype(float)
+    away_rows["margin"]   = away_rows["result"].abs()
+
+    all_rows = pd.concat([home_rows, away_rows], ignore_index=True)
+    all_rows = all_rows.sort_values(["team", "season", "week"]).reset_index(drop=True)
+
+    all_rows["is_close"]  = (all_rows["margin"] <= CLOSE_GAME_MARGIN).astype(float)
+    all_rows["close_win"] = all_rows["is_close"] * all_rows["team_won"]
+
+    all_rows["roll_close_games"] = (
+        all_rows.groupby("team")["is_close"]
+                .transform(lambda x: x.shift(1).rolling(CLUTCH_ROLL, min_periods=3).sum())
+    )
+    all_rows["roll_close_wins"] = (
+        all_rows.groupby("team")["close_win"]
+                .transform(lambda x: x.shift(1).rolling(CLUTCH_ROLL, min_periods=3).sum())
+    )
+    all_rows["roll_clutch_rate"] = (
+        all_rows["roll_close_wins"] / all_rows["roll_close_games"].replace(0, np.nan)
+    ).fillna(0.5)
+
+    # Keep only game_id + team + clutch rate
+    clutch = all_rows[["game_id", "team", "roll_clutch_rate"]].copy()
+
+    # Merge to game level using separate joins for home and away
+    # This avoids the duplication problem from merging a long table twice
+    home_c = (
+        games[["game_id", "home_team"]]
+        .merge(
+            clutch.rename(columns={"team": "home_team", "roll_clutch_rate": "home_clutch_rate"}),
+            on=["game_id", "home_team"], how="left"
+        )
+    )
+    away_c = (
+        games[["game_id", "away_team"]]
+        .merge(
+            clutch.rename(columns={"team": "away_team", "roll_clutch_rate": "away_clutch_rate"}),
+            on=["game_id", "away_team"], how="left"
+        )
+    )
+
+    result = home_c.merge(away_c, on="game_id", how="left")
+    result["home_clutch_rate"] = result["home_clutch_rate"].fillna(0.5)
+    result["away_clutch_rate"] = result["away_clutch_rate"].fillna(0.5)
+
+    return result[["game_id", "home_clutch_rate", "away_clutch_rate"]]
 
 
 # ── Data loading ──────────────────────────────────────────────────────────────
@@ -179,6 +254,15 @@ def load_training_data() -> pd.DataFrame:
                 "injury_score_diff", "home_qb_out", "away_qb_out", "qb_out_diff"]:
         df[col] = df[col].fillna(0)
 
+    clutch = build_clutch_features()
+    df = df.merge(clutch, on="game_id", how="left")
+    df["home_clutch_rate"] = df["home_clutch_rate"].fillna(0.5)
+    df["away_clutch_rate"] = df["away_clutch_rate"].fillna(0.5)
+    df["clutch_rate_diff"] = df["home_clutch_rate"] - df["away_clutch_rate"]
+
+    # Sanity check — should match original game count
+    print(f"  Training rows after all merges: {len(df):,}")
+
     return df
 
 
@@ -209,6 +293,7 @@ FEATURE_COLS = [
     "qb_out_diff",
     "home_qb_out",
     "away_qb_out",
+    "clutch_rate_diff",
 ]
 
 
