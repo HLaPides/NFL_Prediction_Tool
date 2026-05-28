@@ -133,8 +133,8 @@ function Pill({ label, value, color = 'var(--silver)' }) {
 function ProbBar({ homeProb, homeTeam, awayTeam }) {
   const homePct = Math.round(homeProb * 100)
   const awayPct = 100 - homePct
-  const hColor = teamColor(homeTeam)
-  const aColor = teamColor(awayTeam)
+  const hColor  = teamColor(homeTeam)
+  const aColor  = teamColor(awayTeam)
   return (
     <div style={{ marginTop: 10 }}>
       <div style={{ display: 'flex', height: 3, background: 'var(--bg)' }}>
@@ -172,9 +172,10 @@ function GameCard({ game, idx }) {
     : null
 
   const topBorder =
-    modelCorrect === true  ? 'var(--green)' :
-    modelCorrect === false ? 'var(--red)'   :
-    hasEdge ? 'var(--gold)' : teamColor(game.home_team)
+    modelCorrect === true  ? 'var(--green)'  :
+    modelCorrect === false ? 'var(--red)'    :
+    hasEdge                ? 'var(--gold)'   :
+    teamColor(game.home_team)
 
   return (
     <div className="fadein" style={{
@@ -271,7 +272,7 @@ function GameCard({ game, idx }) {
   )
 }
 
-// ── Generic Props Card ────────────────────────────────────────────────────────
+// ── Props Card ────────────────────────────────────────────────────────────────
 function PropCard({ player, idx, statKey, statLabel, threshold = 25 }) {
   const [propLine, setPropLine] = useState('')
 
@@ -349,16 +350,13 @@ function PropCard({ player, idx, statKey, statLabel, threshold = 25 }) {
             {statLabel} LINE
           </span>
           <input
-            type="number"
-            placeholder="—"
-            value={propLine}
+            type="number" placeholder="—" value={propLine}
             onChange={e => setPropLine(e.target.value)}
             style={{
               fontFamily: 'var(--font-head)', fontWeight: 600, fontSize: 18,
               width: 80, textAlign: 'center',
               background: 'var(--bg3)', color: 'var(--white)',
-              border: '1px solid var(--border2)', padding: '4px 8px',
-              outline: 'none',
+              border: '1px solid var(--border2)', padding: '4px 8px', outline: 'none',
             }}
           />
           {propLine !== '' && (
@@ -381,24 +379,9 @@ function PropCard({ player, idx, statKey, statLabel, threshold = 25 }) {
 
 // ── Props Tab ─────────────────────────────────────────────────────────────────
 const POSITION_CONFIG = {
-  qb: {
-    label: 'QB PROPS', super: 'Quarterback projections',
-    endpoint: '/props/qb',
-    statKey: 'passing_yards', statLabel: 'PASS YDS', threshold: 25,
-    legend: ['▲ OVER ≥ +25 yds', '▼ UNDER ≤ −25 yds', 'NO BET < 25 yds gap'],
-  },
-  rb: {
-    label: 'RB PROPS', super: 'Running back projections',
-    endpoint: '/props/rb',
-    statKey: 'rushing_yards', statLabel: 'RUSH YDS', threshold: 15,
-    legend: ['▲ OVER ≥ +15 yds', '▼ UNDER ≤ −15 yds', 'NO BET < 15 yds gap'],
-  },
-  wr: {
-    label: 'WR PROPS', super: 'Wide receiver projections',
-    endpoint: '/props/wr',
-    statKey: 'receiving_yards', statLabel: 'REC YDS', threshold: 15,
-    legend: ['▲ OVER ≥ +15 yds', '▼ UNDER ≤ −15 yds', 'NO BET < 15 yds gap'],
-  },
+  qb: { label:'QB PROPS', super:'Quarterback projections', endpoint:'/props/qb', statKey:'passing_yards',  statLabel:'PASS YDS', threshold:25, legend:['▲ OVER ≥ +25 yds','▼ UNDER ≤ −25 yds','NO BET < 25 yds gap'] },
+  rb: { label:'RB PROPS', super:'Running back projections', endpoint:'/props/rb', statKey:'rushing_yards',  statLabel:'RUSH YDS', threshold:15, legend:['▲ OVER ≥ +15 yds','▼ UNDER ≤ −15 yds','NO BET < 15 yds gap'] },
+  wr: { label:'WR PROPS', super:'Wide receiver projections', endpoint:'/props/wr', statKey:'receiving_yards', statLabel:'REC YDS',  threshold:15, legend:['▲ OVER ≥ +15 yds','▼ UNDER ≤ −15 yds','NO BET < 15 yds gap'] },
 }
 
 function PropsTab() {
@@ -406,91 +389,53 @@ function PropsTab() {
   const [data, setData]       = useState({})
   const [loading, setLoading] = useState(false)
   const [status, setStatus]   = useState('')
-
   const cfg = POSITION_CONFIG[pos]
 
   useEffect(() => {
     if (data[pos]) return
-    setLoading(true)
-    setStatus('')
+    setLoading(true); setStatus('')
     axios.get(`${API}${cfg.endpoint}`)
       .then(r => { setData(d => ({ ...d, [pos]: r.data })); setLoading(false) })
       .catch(() => { setStatus('No prop data. Run weekly update first.'); setLoading(false) })
   }, [pos])
 
   const players = data[pos] || []
-
   const posTabStyle = (id) => ({
-    fontFamily: 'var(--font-head)', fontWeight: 500,
-    fontSize: 12, letterSpacing: '0.12em', padding: '6px 18px',
-    border: 'none', cursor: 'pointer', transition: 'all 0.15s',
+    fontFamily:'var(--font-head)', fontWeight:500, fontSize:12, letterSpacing:'0.12em', padding:'6px 18px',
+    border:'none', cursor:'pointer', transition:'all 0.15s',
     background: pos === id ? 'var(--gold)' : 'transparent',
     color: pos === id ? 'var(--bg)' : 'var(--text-dim)',
   })
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 18 }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-end', marginBottom:18 }}>
         <div>
           <Super>{cfg.super}</Super>
-          <div style={{
-            fontFamily: 'var(--font-head)', fontWeight: 700,
-            fontSize: 32, color: 'var(--white)', letterSpacing: '0.03em', lineHeight: 1,
-          }}>
-            {cfg.label}
-          </div>
-          <div style={{ marginTop: 6, fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-dim)', letterSpacing: '0.12em' }}>
-            Enter the book's prop line to get an OVER / UNDER recommendation
-          </div>
+          <div style={{ fontFamily:'var(--font-head)', fontWeight:700, fontSize:32, color:'var(--white)', letterSpacing:'0.03em', lineHeight:1 }}>{cfg.label}</div>
+          <div style={{ marginTop:6, fontFamily:'var(--font-mono)', fontSize:10, color:'var(--text-dim)', letterSpacing:'0.12em' }}>Enter the book's prop line to get an OVER / UNDER recommendation</div>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
-          <div style={{ display: 'flex', border: '1px solid var(--border2)', overflow: 'hidden' }}>
-            {['qb','rb','wr'].map(p => (
-              <button key={p} onClick={() => setPos(p)} style={posTabStyle(p)}>
-                {p.toUpperCase()}
-              </button>
-            ))}
+        <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:8 }}>
+          <div style={{ display:'flex', border:'1px solid var(--border2)', overflow:'hidden' }}>
+            {['qb','rb','wr'].map(p => <button key={p} onClick={() => setPos(p)} style={posTabStyle(p)}>{p.toUpperCase()}</button>)}
           </div>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-dim)', letterSpacing: '0.15em', textAlign: 'right' }}>
-            <div style={{ color: 'var(--green)', marginBottom: 2 }}>{cfg.legend[0]}</div>
-            <div style={{ color: 'var(--red)' }}>{cfg.legend[1]}</div>
-            <div style={{ marginTop: 2 }}>{cfg.legend[2]}</div>
+          <div style={{ fontFamily:'var(--font-mono)', fontSize:9, color:'var(--text-dim)', letterSpacing:'0.15em', textAlign:'right' }}>
+            <div style={{ color:'var(--green)', marginBottom:2 }}>{cfg.legend[0]}</div>
+            <div style={{ color:'var(--red)' }}>{cfg.legend[1]}</div>
+            <div style={{ marginTop:2 }}>{cfg.legend[2]}</div>
           </div>
         </div>
       </div>
-
-      <Rule style={{ marginBottom: 18 }} />
-
-      {status && (
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.1em', color: 'var(--text-dim)', marginBottom: 14 }}>
-          {status}
-        </div>
-      )}
-
+      <Rule style={{ marginBottom:18 }} />
+      {status && <div style={{ fontFamily:'var(--font-mono)', fontSize:10, letterSpacing:'0.1em', color:'var(--text-dim)', marginBottom:14 }}>{status}</div>}
       {loading ? (
-        <div style={{ textAlign: 'center', marginTop: 80, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-dim)', letterSpacing: '0.2em' }}>
-          LOADING...
-        </div>
+        <div style={{ textAlign:'center', marginTop:80, fontFamily:'var(--font-mono)', fontSize:11, color:'var(--text-dim)', letterSpacing:'0.2em' }}>LOADING...</div>
       ) : players.length === 0 ? (
-        <div style={{ textAlign: 'center', marginTop: 80, color: 'var(--text-dim)' }}>
-          <div style={{ marginBottom: 8, fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.15em' }}>
-            NO PROP DATA AVAILABLE
-          </div>
-          <div style={{ fontSize: 13 }}>
-            Run the weekly update from the PICKS tab to generate projections.
-          </div>
+        <div style={{ textAlign:'center', marginTop:80, color:'var(--text-dim)' }}>
+          <div style={{ marginBottom:8, fontFamily:'var(--font-mono)', fontSize:11, letterSpacing:'0.15em' }}>NO PROP DATA AVAILABLE</div>
+          <div style={{ fontSize:13 }}>Run the weekly update from the PICKS tab to generate projections.</div>
         </div>
-      ) : (
-        players.map((p, i) => (
-          <PropCard
-            key={`${p.player_name}-${p.team}-${i}`}
-            player={p} idx={i}
-            statKey={cfg.statKey}
-            statLabel={cfg.statLabel}
-            threshold={cfg.threshold}
-          />
-        ))
-      )}
+      ) : players.map((p, i) => <PropCard key={`${p.player_name}-${p.team}-${i}`} player={p} idx={i} statKey={cfg.statKey} statLabel={cfg.statLabel} threshold={cfg.threshold} />)}
     </div>
   )
 }
@@ -509,11 +454,11 @@ function WinnersTab() {
   const weeks   = Array.from({ length: 22 }, (_, i) => i + 1)
 
   const normalizeHistorical = (games) => games.map(g => {
-    const spreadToProb = (spread) => {
-      const eloDiff = spread * 25
-      return 1 / (1 + Math.pow(10, -eloDiff / 400))
-    }
-    const home_win_prob = spreadToProb(g.model_spread)
+    // Use home_win_prob from API if available (playoff model provides it directly)
+    // otherwise compute from spread
+    const home_win_prob = g.home_win_prob != null
+      ? g.home_win_prob
+      : (() => { const e = (g.model_spread || 0) * 25; return 1 / (1 + Math.pow(10, -e / 400)) })()
     return { ...g, predicted_winner: g.model_winner, home_win_prob, is_historical: true }
   })
 
@@ -522,11 +467,8 @@ function WinnersTab() {
     try {
       const res = await axios.get(`${API}/predictions`)
       setPredictions(res.data)
-    } catch {
-      setStatus('Connection error. Verify api.py is running.')
-    } finally {
-      setLoading(false)
-    }
+    } catch { setStatus('Connection error. Verify api.py is running.') }
+    finally  { setLoading(false) }
   }
 
   const loadHistoricalWeek = async (season, week) => {
@@ -534,86 +476,62 @@ function WinnersTab() {
     try {
       const res = await axios.get(`${API}/predictions/historical`, { params: { season, week } })
       setPredictions(normalizeHistorical(res.data))
-    } catch {
-      setStatus('Connection error. Verify api.py is running.')
-    } finally {
-      setLoading(false)
-    }
+    } catch { setStatus('Connection error. Verify api.py is running.') }
+    finally  { setLoading(false) }
   }
 
   useEffect(() => { loadLive() }, [])
 
   const refresh = async () => {
-    setRefreshing(true)
-    setStatus('Syncing data...')
+    setRefreshing(true); setStatus('Syncing data...')
     try {
       await axios.post(`${API}/refresh`)
       const poll = async () => {
         const s = await axios.get(`${API}/refresh/status`)
-        if (s.data.running) {
-          setTimeout(poll, 2000)
-        } else {
+        if (s.data.running) { setTimeout(poll, 2000) }
+        else {
           setStatus(s.data.last_result === 'success' ? 'Updated.' : s.data.last_result)
-          setRefreshing(false)
-          loadLive()
+          setRefreshing(false); loadLive()
         }
       }
       poll()
-    } catch (e) {
-      setStatus(e.response?.data?.detail || 'Refresh failed')
-      setRefreshing(false)
-    }
+    } catch (e) { setStatus(e.response?.data?.detail || 'Refresh failed'); setRefreshing(false) }
   }
 
   const edgeGames = predictions.filter(p => p.spread_gap != null && Math.abs(p.spread_gap) >= 2.5)
 
   const selectStyle = {
-    fontFamily: 'var(--font-head)', fontWeight: 500,
-    fontSize: 13, letterSpacing: '0.08em', padding: '5px 10px',
-    background: 'var(--bg3)', color: 'var(--white)',
-    border: '1px solid var(--border2)', cursor: 'pointer',
-    outline: 'none', appearance: 'none', WebkitAppearance: 'none',
+    fontFamily:'var(--font-head)', fontWeight:500, fontSize:13, letterSpacing:'0.08em', padding:'5px 10px',
+    background:'var(--bg3)', color:'var(--white)', border:'1px solid var(--border2)',
+    cursor:'pointer', outline:'none', appearance:'none', WebkitAppearance:'none',
   }
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 18 }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-end', marginBottom:18 }}>
         <div>
           <Super>{historical ? `${histSeason} · WEEK ${histWeek}` : "Week's predictions"}</Super>
-          <div style={{
-            fontFamily: 'var(--font-head)', fontWeight: 700,
-            fontSize: 32, color: 'var(--white)', letterSpacing: '0.03em', lineHeight: 1,
-          }}>
+          <div style={{ fontFamily:'var(--font-head)', fontWeight:700, fontSize:32, color:'var(--white)', letterSpacing:'0.03em', lineHeight:1 }}>
             GAME PICKS
           </div>
-          {edgeGames.length > 0 && (
-            <div style={{
-              marginTop: 6, fontFamily: 'var(--font-mono)', fontSize: 10,
-              color: 'var(--gold)', letterSpacing: '0.15em',
-            }}>
-              {edgeGames.length} value edge{edgeGames.length !== 1 ? 's' : ''} detected
+          {edgeGames.length > 0 && !historical && (
+            <div style={{ marginTop:6, fontFamily:'var(--font-mono)', fontSize:10, color:'var(--gold)', letterSpacing:'0.15em' }}>
+              {edgeGames.length} edge{edgeGames.length !== 1 ? 's' : ''} detected
             </div>
           )}
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div style={{ display: 'flex', border: '1px solid var(--border2)', overflow: 'hidden' }}>
-            {[{ id: false, label: 'LIVE' }, { id: true, label: 'HISTORY' }].map(m => (
-              <button key={String(m.id)} onClick={() => {
-                setHistorical(m.id)
-                if (!m.id) { setStatus(''); loadLive() }
-              }} style={{
-                fontFamily: 'var(--font-head)', fontWeight: 500,
-                fontSize: 11, letterSpacing: '0.12em', padding: '6px 14px',
-                border: 'none', cursor: 'pointer', transition: 'all 0.15s',
+        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+          <div style={{ display:'flex', border:'1px solid var(--border2)', overflow:'hidden' }}>
+            {[{ id:false, label:'LIVE' },{ id:true, label:'HISTORY' }].map(m => (
+              <button key={String(m.id)} onClick={() => { setHistorical(m.id); if (!m.id) { setStatus(''); loadLive() } }} style={{
+                fontFamily:'var(--font-head)', fontWeight:500, fontSize:11, letterSpacing:'0.12em', padding:'6px 14px',
+                border:'none', cursor:'pointer', transition:'all 0.15s',
                 background: historical === m.id ? 'var(--gold)' : 'transparent',
                 color: historical === m.id ? 'var(--bg)' : 'var(--text-dim)',
-              }}>
-                {m.label}
-              </button>
+              }}>{m.label}</button>
             ))}
           </div>
-
           {historical ? (
             <>
               <select value={histSeason} onChange={e => setHistSeason(+e.target.value)} style={selectStyle}>
@@ -623,49 +541,34 @@ function WinnersTab() {
                 {weeks.map(w => <option key={w} value={w}>WK {w}</option>)}
               </select>
               <button onClick={() => { setStatus(''); loadHistoricalWeek(histSeason, histWeek) }} style={{
-                fontFamily: 'var(--font-head)', fontWeight: 500,
-                fontSize: 13, letterSpacing: '0.15em', padding: '8px 20px',
-                background: 'transparent', border: '1px solid var(--gold)',
-                color: 'var(--gold)', cursor: 'pointer',
+                fontFamily:'var(--font-head)', fontWeight:500, fontSize:13, letterSpacing:'0.15em', padding:'8px 20px',
+                background:'transparent', border:'1px solid var(--gold)', color:'var(--gold)', cursor:'pointer',
               }}>GO</button>
             </>
           ) : (
             <button onClick={refresh} disabled={refreshing} style={{
-              fontFamily: 'var(--font-head)', fontWeight: 500,
-              fontSize: 13, letterSpacing: '0.15em', padding: '8px 20px',
-              background: 'transparent',
-              border: `1px solid ${refreshing ? 'var(--border2)' : 'var(--gold)'}`,
+              fontFamily:'var(--font-head)', fontWeight:500, fontSize:13, letterSpacing:'0.15em', padding:'8px 20px',
+              background:'transparent',
+              border:`1px solid ${refreshing ? 'var(--border2)' : 'var(--gold)'}`,
               color: refreshing ? 'var(--text-dim)' : 'var(--gold)',
-              cursor: refreshing ? 'default' : 'pointer', transition: 'all 0.15s',
-            }}>
-              {refreshing ? 'SYNCING...' : 'REFRESH'}
-            </button>
+              cursor: refreshing ? 'default' : 'pointer', transition:'all 0.15s',
+            }}>{refreshing ? 'SYNCING...' : 'REFRESH'}</button>
           )}
         </div>
       </div>
 
-      <Rule style={{ marginBottom: 18 }} />
+      <Rule style={{ marginBottom:18 }} />
 
       {status && (
-        <div style={{
-          fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.1em',
-          color: status.includes('Updated') ? 'var(--green)' : 'var(--text-dim)',
-          marginBottom: 14,
-        }}>
+        <div style={{ fontFamily:'var(--font-mono)', fontSize:10, letterSpacing:'0.1em', color: status.includes('Updated') ? 'var(--green)' : 'var(--text-dim)', marginBottom:14 }}>
           {status}
         </div>
       )}
 
       {loading ? (
-        <div style={{
-          textAlign: 'center', marginTop: 80,
-          fontFamily: 'var(--font-mono)', fontSize: 11,
-          color: 'var(--text-dim)', letterSpacing: '0.2em',
-        }}>LOADING...</div>
+        <div style={{ textAlign:'center', marginTop:80, fontFamily:'var(--font-mono)', fontSize:11, color:'var(--text-dim)', letterSpacing:'0.2em' }}>LOADING...</div>
       ) : predictions.length === 0 ? (
-        <div style={{ textAlign: 'center', marginTop: 80, color: 'var(--text-dim)' }}>
-          No predictions. Click Refresh to run the weekly update.
-        </div>
+        <div style={{ textAlign:'center', marginTop:80, color:'var(--text-dim)' }}>No predictions. Click Refresh to run the weekly update.</div>
       ) : (
         predictions.map((g, i) => <GameCard key={g.game_id} game={g} idx={i} />)
       )}
@@ -676,71 +579,41 @@ function WinnersTab() {
 // ── Rankings Tab ──────────────────────────────────────────────────────────────
 function EloTab() {
   const [ratings, setRatings] = useState([])
-
-  useEffect(() => {
-    axios.get(`${API}/elo`).then(r => setRatings(r.data)).catch(() => {})
-  }, [])
-
+  useEffect(() => { axios.get(`${API}/elo`).then(r => setRatings(r.data)).catch(() => {}) }, [])
   const max = ratings[0]?.elo ?? 1800
   const min = ratings[ratings.length - 1]?.elo ?? 1200
 
   return (
     <div>
       <Super>Current standings</Super>
-      <div style={{
-        fontFamily: 'var(--font-head)', fontWeight: 700,
-        fontSize: 32, color: 'var(--white)', letterSpacing: '0.03em',
-        lineHeight: 1, marginBottom: 18,
-      }}>
-        POWER RANKINGS
+      <div style={{ fontFamily:'var(--font-head)', fontWeight:700, fontSize:32, color:'var(--white)', letterSpacing:'0.03em', lineHeight:1, marginBottom:18 }}>POWER RANKINGS</div>
+      <Rule style={{ marginBottom:16 }} />
+      <div style={{ display:'grid', gridTemplateColumns:'32px 220px 1fr 70px 48px', padding:'0 12px 8px', fontFamily:'var(--font-mono)', fontSize:9, color:'var(--text-dim)', letterSpacing:'0.15em', borderBottom:'1px solid var(--border)', marginBottom:4 }}>
+        <span>RK</span><span>TEAM</span><span /><span style={{ textAlign:'right' }}>RATING</span><span style={{ textAlign:'right' }}>TIER</span>
       </div>
-      <Rule style={{ marginBottom: 16 }} />
-
-      <div style={{
-        display: 'grid', gridTemplateColumns: '32px 220px 1fr 70px 48px',
-        padding: '0 12px 8px',
-        fontFamily: 'var(--font-mono)', fontSize: 9,
-        color: 'var(--text-dim)', letterSpacing: '0.15em',
-        borderBottom: '1px solid var(--border)', marginBottom: 4,
-      }}>
-        <span>RK</span><span>TEAM</span><span /><span style={{ textAlign: 'right' }}>RATING</span><span style={{ textAlign: 'right' }}>TIER</span>
-      </div>
-
       {ratings.map((r, i) => {
-        const pct = ((r.elo - min) / (max - min)) * 100
-        const tier =
-          r.elo >= 1650 ? { label: 'I',   color: 'var(--gold)' }      :
-          r.elo >= 1560 ? { label: 'II',  color: 'var(--silver-lt)' } :
-          r.elo >= 1470 ? { label: 'III', color: 'var(--silver)' }    :
-          r.elo >= 1400 ? { label: 'IV',  color: 'var(--text-dim)' }  :
-                          { label: 'V',   color: '#4a4a60' }
+        const pct  = ((r.elo - min) / (max - min)) * 100
+        const tier = r.elo >= 1650 ? { label:'I',   color:'var(--gold)' }
+                   : r.elo >= 1560 ? { label:'II',  color:'var(--silver-lt)' }
+                   : r.elo >= 1470 ? { label:'III', color:'var(--silver)' }
+                   : r.elo >= 1400 ? { label:'IV',  color:'var(--text-dim)' }
+                   :                 { label:'V',   color:'#4a4a60' }
         const fullName = TEAM_NAMES[r.team] || r.team
-        const accent = teamColor(r.team)
-
+        const accent   = teamColor(r.team)
         return (
-          <div key={r.team} style={{
-            display: 'grid', gridTemplateColumns: '32px 220px 1fr 70px 48px',
-            alignItems: 'center', padding: '7px 12px',
-            borderBottom: '1px solid var(--border)',
-            borderLeft: `2px solid ${i < 5 ? accent : 'transparent'}`,
-            background: i < 5 ? 'rgba(201,168,76,0.025)' : 'transparent',
-          }}>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-dim)' }}>{i + 1}</span>
+          <div key={r.team} style={{ display:'grid', gridTemplateColumns:'32px 220px 1fr 70px 48px', alignItems:'center', padding:'7px 12px', borderBottom:'1px solid var(--border)', borderLeft:`2px solid ${i < 5 ? accent : 'transparent'}`, background: i < 5 ? 'rgba(201,168,76,0.025)' : 'transparent' }}>
+            <span style={{ fontFamily:'var(--font-mono)', fontSize:11, color:'var(--text-dim)' }}>{i + 1}</span>
             <div>
-              <div style={{ fontFamily: 'var(--font-head)', fontWeight: 600, fontSize: 15, color: 'var(--white)', letterSpacing: '0.02em', lineHeight: 1.1 }}>
-                {fullName}
-              </div>
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-dim)', letterSpacing: '0.1em', marginTop: 2 }}>
-                {r.team}
+              <div style={{ fontFamily:'var(--font-head)', fontWeight:600, fontSize:15, color:'var(--white)', letterSpacing:'0.02em', lineHeight:1.1 }}>{fullName}</div>
+              <div style={{ fontFamily:'var(--font-mono)', fontSize:9, color:'var(--text-dim)', letterSpacing:'0.1em', marginTop:2 }}>{r.team}</div>
+            </div>
+            <div style={{ paddingRight:16 }}>
+              <div style={{ height:2, background:'var(--bg)' }}>
+                <div style={{ width:`${pct}%`, height:'100%', background:accent, minWidth:2, opacity:0.6 }} />
               </div>
             </div>
-            <div style={{ paddingRight: 16 }}>
-              <div style={{ height: 2, background: 'var(--bg)' }}>
-                <div style={{ width: `${pct}%`, height: '100%', background: accent, minWidth: 2, opacity: 0.6 }} />
-              </div>
-            </div>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--text)', textAlign: 'right' }}>{Math.round(r.elo)}</span>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: tier.color, textAlign: 'right', letterSpacing: '0.1em' }}>{tier.label}</span>
+            <span style={{ fontFamily:'var(--font-mono)', fontSize:13, color:'var(--text)', textAlign:'right' }}>{Math.round(r.elo)}</span>
+            <span style={{ fontFamily:'var(--font-mono)', fontSize:10, color:tier.color, textAlign:'right', letterSpacing:'0.1em' }}>{tier.label}</span>
           </div>
         )
       })}
@@ -752,84 +625,47 @@ function EloTab() {
 function AboutTab() {
   const [stats, setStats] = useState([])
   useEffect(() => { axios.get(`${API}/stats`).then(r => setStats(r.data)).catch(() => {}) }, [])
-
   const allTime = stats.find(s => s.season === 'All-time')
-  const edge = allTime ? (allTime.model_accuracy - allTime.vegas_accuracy) * 100 : null
-
+  const edge    = allTime ? (allTime.model_accuracy - allTime.vegas_accuracy) * 100 : null
   const summaryStats = allTime ? [
-    { label: 'GAMES ANALYZED', value: allTime.games.toLocaleString(), color: 'var(--silver-lt)' },
-    { label: 'MODEL ACCURACY', value: `${(allTime.model_accuracy * 100).toFixed(1)}%`, color: 'var(--silver-lt)' },
-    { label: 'VEGAS ACCURACY', value: `${(allTime.vegas_accuracy * 100).toFixed(1)}%`, color: 'var(--silver)' },
-    { label: 'EDGE VS VEGAS',  value: `${edge > 0 ? '+' : ''}${edge?.toFixed(1)}%`, color: edge > 0 ? 'var(--gold)' : 'var(--red)' },
+    { label:'GAMES ANALYZED', value:allTime.games.toLocaleString(),                         color:'var(--silver-lt)' },
+    { label:'MODEL ACCURACY', value:`${(allTime.model_accuracy * 100).toFixed(1)}%`,        color:'var(--silver-lt)' },
+    { label:'VEGAS ACCURACY', value:`${(allTime.vegas_accuracy * 100).toFixed(1)}%`,        color:'var(--silver)' },
+    { label:'EDGE VS VEGAS',  value:`${edge > 0 ? '+' : ''}${edge?.toFixed(1)}%`,           color: edge > 0 ? 'var(--gold)' : 'var(--red)' },
   ] : []
 
   return (
-    <div style={{ maxWidth: 760 }}>
+    <div style={{ maxWidth:760 }}>
       <Super>About this model</Super>
-      <div style={{
-        fontFamily: 'var(--font-head)', fontWeight: 700,
-        fontSize: 32, color: 'var(--white)', letterSpacing: '0.03em', lineHeight: 1, marginBottom: 18,
-      }}>
-        JAGINATOR
-      </div>
-      <Rule style={{ marginBottom: 20 }} />
-
-      <p style={{
-        fontFamily: 'var(--font-body)', fontWeight: 300, fontSize: 15, lineHeight: 1.8,
-        color: 'var(--text)', marginBottom: 28,
-        borderLeft: '2px solid var(--gold-dk)', paddingLeft: 16,
-      }}>
-        NFL game prediction engine trained on 26 seasons of data (1999–2025).
-        Combines ELO ratings, player EPA metrics, team rolling stats, and weather conditions
-        using a stacked XGBoost + Ridge regression architecture with walk-forward validation.
+      <div style={{ fontFamily:'var(--font-head)', fontWeight:700, fontSize:32, color:'var(--white)', letterSpacing:'0.03em', lineHeight:1, marginBottom:18 }}>JAGINATOR</div>
+      <Rule style={{ marginBottom:20 }} />
+      <p style={{ fontFamily:'var(--font-body)', fontWeight:300, fontSize:15, lineHeight:1.8, color:'var(--text)', marginBottom:28, borderLeft:'2px solid var(--gold-dk)', paddingLeft:16 }}>
+        NFL game prediction engine trained on 26 seasons of data (1999–2025). Combines ELO ratings, player EPA metrics, team rolling stats, and injury data using a stacked XGBoost + Ridge regression architecture with walk-forward validation. During January and February a separate playoff logistic regression model replaces the main model for playoff games.
       </p>
-
       {summaryStats.length > 0 && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', border: '1px solid var(--border)', marginBottom: 28 }}>
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(4, 1fr)', border:'1px solid var(--border)', marginBottom:28 }}>
           {summaryStats.map((s, i) => (
-            <div key={s.label} style={{ padding: '16px', borderRight: i < 3 ? '1px solid var(--border)' : 'none' }}>
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-dim)', letterSpacing: '0.15em', marginBottom: 6 }}>
-                {s.label}
-              </div>
-              <div style={{ fontFamily: 'var(--font-head)', fontWeight: 700, fontSize: 26, color: s.color, lineHeight: 1 }}>
-                {s.value}
-              </div>
+            <div key={s.label} style={{ padding:'16px', borderRight: i < 3 ? '1px solid var(--border)' : 'none' }}>
+              <div style={{ fontFamily:'var(--font-mono)', fontSize:9, color:'var(--text-dim)', letterSpacing:'0.15em', marginBottom:6 }}>{s.label}</div>
+              <div style={{ fontFamily:'var(--font-head)', fontWeight:700, fontSize:26, color:s.color, lineHeight:1 }}>{s.value}</div>
             </div>
           ))}
         </div>
       )}
-
-      <Super style={{ marginBottom: 10 }}>Season-by-season record</Super>
-      <div style={{ border: '1px solid var(--border)' }}>
-        <div style={{
-          display: 'grid', gridTemplateColumns: '70px 60px 80px 80px 70px',
-          padding: '7px 14px', background: 'var(--bg3)',
-          borderBottom: '1px solid var(--border2)',
-          fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-dim)', letterSpacing: '0.15em',
-        }}>
-          <span>SEASON</span><span style={{ textAlign: 'right' }}>GAMES</span>
-          <span style={{ textAlign: 'right' }}>MODEL</span><span style={{ textAlign: 'right' }}>VEGAS</span>
-          <span style={{ textAlign: 'right' }}>EDGE</span>
+      <Super style={{ marginBottom:10 }}>Season-by-season record</Super>
+      <div style={{ border:'1px solid var(--border)' }}>
+        <div style={{ display:'grid', gridTemplateColumns:'70px 60px 80px 80px 70px', padding:'7px 14px', background:'var(--bg3)', borderBottom:'1px solid var(--border2)', fontFamily:'var(--font-mono)', fontSize:9, color:'var(--text-dim)', letterSpacing:'0.15em' }}>
+          <span>SEASON</span><span style={{ textAlign:'right' }}>GAMES</span><span style={{ textAlign:'right' }}>MODEL</span><span style={{ textAlign:'right' }}>VEGAS</span><span style={{ textAlign:'right' }}>EDGE</span>
         </div>
         {stats.filter(s => s.season !== 'All-time').map((s) => {
           const rowEdge = (s.model_accuracy - s.vegas_accuracy) * 100
           return (
-            <div key={s.season} style={{
-              display: 'grid', gridTemplateColumns: '70px 60px 80px 80px 70px',
-              padding: '5px 14px', borderBottom: '1px solid var(--border)',
-              fontFamily: 'var(--font-mono)', fontSize: 12,
-              background: rowEdge > 0 ? 'rgba(201,168,76,0.03)' : 'transparent',
-            }}>
-              <span style={{ color: 'var(--silver)' }}>{s.season}</span>
-              <span style={{ textAlign: 'right', color: 'var(--text-dim)' }}>{s.games}</span>
-              <span style={{ textAlign: 'right', color: 'var(--text)' }}>{(s.model_accuracy * 100).toFixed(1)}%</span>
-              <span style={{ textAlign: 'right', color: 'var(--text-dim)' }}>{(s.vegas_accuracy * 100).toFixed(1)}%</span>
-              <span style={{
-                textAlign: 'right', fontWeight: rowEdge > 0 ? 700 : 400,
-                color: rowEdge > 0 ? 'var(--gold)' : 'var(--text-dim)',
-              }}>
-                {rowEdge > 0 ? '+' : ''}{rowEdge.toFixed(1)}%
-              </span>
+            <div key={s.season} style={{ display:'grid', gridTemplateColumns:'70px 60px 80px 80px 70px', padding:'5px 14px', borderBottom:'1px solid var(--border)', fontFamily:'var(--font-mono)', fontSize:12, background: rowEdge > 0 ? 'rgba(201,168,76,0.03)' : 'transparent' }}>
+              <span style={{ color:'var(--silver)' }}>{s.season}</span>
+              <span style={{ textAlign:'right', color:'var(--text-dim)' }}>{s.games}</span>
+              <span style={{ textAlign:'right', color:'var(--text)' }}>{(s.model_accuracy * 100).toFixed(1)}%</span>
+              <span style={{ textAlign:'right', color:'var(--text-dim)' }}>{(s.vegas_accuracy * 100).toFixed(1)}%</span>
+              <span style={{ textAlign:'right', fontWeight: rowEdge > 0 ? 700 : 400, color: rowEdge > 0 ? 'var(--gold)' : 'var(--text-dim)' }}>{rowEdge > 0 ? '+' : ''}{rowEdge.toFixed(1)}%</span>
             </div>
           )
         })}
@@ -841,33 +677,19 @@ function AboutTab() {
 // ── Strategy Tab helpers ──────────────────────────────────────────────────────
 function StatBox({ label, value, color = 'var(--gold)' }) {
   return (
-    <div style={{
-      padding: '14px 18px', background: 'var(--bg3)',
-      border: '1px solid var(--border)', borderTop: `2px solid ${color}`,
-      flex: 1,
-    }}>
-      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-dim)', letterSpacing: '0.15em', marginBottom: 6 }}>
-        {label}
-      </div>
-      <div style={{ fontFamily: 'var(--font-head)', fontWeight: 700, fontSize: 22, color, lineHeight: 1 }}>
-        {value}
-      </div>
+    <div style={{ padding:'14px 18px', background:'var(--bg3)', border:'1px solid var(--border)', borderTop:`2px solid ${color}`, flex:1 }}>
+      <div style={{ fontFamily:'var(--font-mono)', fontSize:9, color:'var(--text-dim)', letterSpacing:'0.15em', marginBottom:6 }}>{label}</div>
+      <div style={{ fontFamily:'var(--font-head)', fontWeight:700, fontSize:22, color, lineHeight:1 }}>{value}</div>
     </div>
   )
 }
 
 function Section({ title, super: superLabel, children, accent = 'var(--gold)' }) {
   return (
-    <div style={{ marginBottom: 40 }}>
-      <Super color={accent} style={{ marginBottom: 6 }}>{superLabel}</Super>
-      <div style={{
-        fontFamily: 'var(--font-head)', fontWeight: 700,
-        fontSize: 24, color: 'var(--white)', letterSpacing: '0.03em',
-        lineHeight: 1, marginBottom: 14,
-      }}>
-        {title}
-      </div>
-      <Rule color={accent} style={{ marginBottom: 18 }} />
+    <div style={{ marginBottom:40 }}>
+      <Super color={accent} style={{ marginBottom:6 }}>{superLabel}</Super>
+      <div style={{ fontFamily:'var(--font-head)', fontWeight:700, fontSize:24, color:'var(--white)', letterSpacing:'0.03em', lineHeight:1, marginBottom:14 }}>{title}</div>
+      <Rule color={accent} style={{ marginBottom:18 }} />
       {children}
     </div>
   )
@@ -875,12 +697,7 @@ function Section({ title, super: superLabel, children, accent = 'var(--gold)' })
 
 function Callout({ children, color = 'var(--gold-dk)' }) {
   return (
-    <div style={{
-      borderLeft: `2px solid ${color}`, paddingLeft: 16,
-      marginBottom: 16,
-      fontFamily: 'var(--font-body)', fontWeight: 300,
-      fontSize: 14, lineHeight: 1.8, color: 'var(--text)',
-    }}>
+    <div style={{ borderLeft:`2px solid ${color}`, paddingLeft:16, marginBottom:16, fontFamily:'var(--font-body)', fontWeight:300, fontSize:14, lineHeight:1.8, color:'var(--text)' }}>
       {children}
     </div>
   )
@@ -889,12 +706,8 @@ function Callout({ children, color = 'var(--gold-dk)' }) {
 function BetRow({ label, value, good = null }) {
   const color = good === true ? 'var(--green)' : good === false ? 'var(--red)' : 'var(--silver)'
   return (
-    <div style={{
-      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-      padding: '8px 14px', borderBottom: '1px solid var(--border)',
-      fontFamily: 'var(--font-mono)', fontSize: 11,
-    }}>
-      <span style={{ color: 'var(--text)', letterSpacing: '0.1em' }}>{label}</span>
+    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 14px', borderBottom:'1px solid var(--border)', fontFamily:'var(--font-mono)', fontSize:11 }}>
+      <span style={{ color:'var(--text)', letterSpacing:'0.1em' }}>{label}</span>
       <span style={{ color, fontWeight: good !== null ? 700 : 400 }}>{value}</span>
     </div>
   )
@@ -903,33 +716,21 @@ function BetRow({ label, value, good = null }) {
 // ── Strategy Tab ──────────────────────────────────────────────────────────────
 function StrategyTab() {
   return (
-    <div style={{ maxWidth: 780 }}>
-      <Super style={{ marginBottom: 6 }}>How to use this tool</Super>
-      <div style={{
-        fontFamily: 'var(--font-head)', fontWeight: 700,
-        fontSize: 32, color: 'var(--white)', letterSpacing: '0.03em', lineHeight: 1, marginBottom: 6,
-      }}>
-        BETTING STRATEGY
-      </div>
-      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-dim)', letterSpacing: '0.12em', marginBottom: 20 }}>
-        Understanding the model, reading the signals, and knowing when to bet
-      </div>
-      <Rule style={{ marginBottom: 32 }} />
+    <div style={{ maxWidth:780 }}>
+      <Super style={{ marginBottom:6 }}>How to use this tool</Super>
+      <div style={{ fontFamily:'var(--font-head)', fontWeight:700, fontSize:32, color:'var(--white)', letterSpacing:'0.03em', lineHeight:1, marginBottom:6 }}>BETTING STRATEGY</div>
+      <div style={{ fontFamily:'var(--font-mono)', fontSize:10, color:'var(--text-dim)', letterSpacing:'0.12em', marginBottom:20 }}>Understanding the model, reading the signals, and knowing when to bet</div>
+      <Rule style={{ marginBottom:32 }} />
 
-      {/* ── The Math ── */}
       <Section title="THE MATH" super="Before anything else" accent="var(--gold)">
-        <Callout>
-          At -110 odds, you need to win 52.4% of bets just to break even after the vig.
-          Everything else in this guide is secondary to understanding that number.
-        </Callout>
-        <div style={{ display: 'flex', gap: 1, marginBottom: 16 }}>
+        <Callout>At -110 odds, you need to win 52.4% of bets just to break even after the vig. Everything else in this guide is secondary to understanding that number.</Callout>
+        <div style={{ display:'flex', gap:1, marginBottom:16 }}>
           <StatBox label="BREAK-EVEN WIN RATE" value="52.4%" color="var(--gold)" />
           <StatBox label="VIG ON $100 BET"      value="$9.09"  color="var(--silver)" />
           <StatBox label="ROI AT 55% WIN RATE"  value="+4.5%" color="var(--green)" />
           <StatBox label="ROI AT 50% WIN RATE"  value="-4.5%" color="var(--red)" />
         </div>
-        <div style={{ border: '1px solid var(--border)' }}>
-          <BetRow label="Bet $110 to win $100 at -110" value="" />
+        <div style={{ border:'1px solid var(--border)' }}>
           <BetRow label="Win" value="+$100 net" good={true} />
           <BetRow label="Lose" value="-$110 net" good={false} />
           <BetRow label="Break-even win rate" value="52.4%" />
@@ -938,142 +739,96 @@ function StrategyTab() {
         </div>
       </Section>
 
-      {/* ── Game Picks ── */}
+      <Section title="PLAYOFF MODEL" super="January–February" accent="var(--green)">
+        <Callout>During playoff weeks the app automatically switches to a logistic regression model trained specifically on playoff games. The game cards look identical — the playoff model simply replaces the main model's winner prediction and win probability.</Callout>
+        <div style={{ display:'flex', gap:1, marginBottom:16 }}>
+          <StatBox label="PLAYOFF ACCURACY" value="65.0%"  color="var(--green)" />
+          <StatBox label="VS MAIN MODEL"     value="+2.0%"  color="var(--silver-lt)" />
+          <StatBox label="CONF CHAMPIONSHIP" value="77.3%"  color="var(--gold)" />
+          <StatBox label="SUPER BOWL"        value="63.6%"  color="var(--gold)" />
+        </div>
+        <div style={{ border:'1px solid var(--border)', marginBottom:16 }}>
+          <BetRow label="Wild Card + Divisional"  value="Same accuracy as main model" />
+          <BetRow label="Conference Championship" value="77.3% — strongest signal"    good={true} />
+          <BetRow label="Super Bowl"              value="63.6% vs 50% Vegas baseline" good={true} />
+        </div>
+      </Section>
+
       <Section title="GAME PICKS" super="Spread model" accent="var(--blue-lt)">
-        <Callout>
-          The model predicts the home team margin using ELO ratings, player EPA, rolling team
-          stats, and injury data.
-        </Callout>
-        <div style={{ display: 'flex', gap: 1, marginBottom: 16 }}>
+        <Callout>The model predicts the home team margin using ELO ratings, player EPA, rolling team stats, and injury data.</Callout>
+        <div style={{ display:'flex', gap:1, marginBottom:16 }}>
           <StatBox label="MODEL ACCURACY" value="66.6%"    color="var(--silver-lt)" />
           <StatBox label="EDGE VS VEGAS"  value="+0.1%"    color="var(--silver)" />
           <StatBox label="EDGE THRESHOLD" value="±2.5 pts" color="var(--gold)" />
         </div>
-
-        <div style={{ fontFamily: 'var(--font-head)', fontWeight: 600, fontSize: 13, color: 'var(--silver-lt)', letterSpacing: '0.08em', marginBottom: 10 }}>
-          READING A PICK
-        </div>
-        <div style={{ border: '1px solid var(--border)', marginBottom: 16 }}>
+        <div style={{ border:'1px solid var(--border)', marginBottom:16 }}>
           <BetRow label="MODEL"       value="Projected home team margin" />
-          <BetRow label="VEGAS"       value="Book's line (negative means home favored)" />
+          <BetRow label="VEGAS"       value="Book's line (negative = home favored)" />
           <BetRow label="EDGE"        value="Model minus Vegas" />
           <BetRow label="Gold border" value="Edge ≥ 2.5 pts" />
         </div>
-
-        <div style={{ fontFamily: 'var(--font-head)', fontWeight: 600, fontSize: 13, color: 'var(--silver-lt)', letterSpacing: '0.08em', marginBottom: 10 }}>
-          WHEN TO BET
+        <div style={{ border:'1px solid var(--border)', marginBottom:16 }}>
+          <BetRow label="Edge ≥ 2.5 pts, model agrees with Vegas on winner" value="Consider betting"   good={true} />
+          <BetRow label="Edge ≥ 2.5 pts, line moved toward model"            value="Stronger signal"   good={true} />
+          <BetRow label="Edge < 2.5 pts"                                      value="No edge"           good={false} />
+          <BetRow label="Weeks 17–18"                                          value="Skip — motivation variance" good={false} />
+          <BetRow label="Division games"                                       value="Use caution" />
         </div>
-        <div style={{ border: '1px solid var(--border)', marginBottom: 16 }}>
-          <BetRow label="Edge ≥ 2.5 pts, model and Vegas agree on winner" value="Consider betting"               good={true} />
-          <BetRow label="Edge ≥ 2.5 pts, line has moved toward model"      value="Stronger signal"               good={true} />
-          <BetRow label="Edge < 2.5 pts"                                    value="No edge"                       good={false} />
-          <BetRow label="Weeks 17–18"                                        value="Rest and motivation variance"  good={false} />
-          <BetRow label="Division games"                                     value="Use caution" />
-        </div>
-
-        <Callout color="var(--blue-lt)">
-          The model uses public data. Vegas has more information. Treat the edge as a starting
-          point. The goal is finding mispriced games, not blindly fading the book.
-        </Callout>
       </Section>
 
-      {/* ── QB Props ── */}
       <Section title="QB PROPS" super="Passing yards model" accent="var(--silver)">
-        <Callout>
-          The model averages about 59 yards of error on QB passing yards. Vegas is sharper
-          (~40–45 MAE). Use this as a second opinion against the book's line, not a
-          standalone signal.
-        </Callout>
-        <div style={{ display: 'flex', gap: 1, marginBottom: 16 }}>
-          <StatBox label="MAE"           value="59 yds"  color="var(--silver)" />
-          <StatBox label="WITHIN 25 YDS" value="26.9%"   color="var(--silver)" />
+        <Callout>The model averages about 59 yards of error on QB passing yards. Use as a second opinion against the book's line, not standalone.</Callout>
+        <div style={{ display:'flex', gap:1, marginBottom:16 }}>
+          <StatBox label="MAE" value="59 yds" color="var(--silver)" />
           <StatBox label="BET THRESHOLD" value="±25 yds" color="var(--gold)" />
         </div>
-        <div style={{ border: '1px solid var(--border)', marginBottom: 16 }}>
+        <div style={{ border:'1px solid var(--border)', marginBottom:16 }}>
           <BetRow label="Model 290, book 255" value="▲ OVER (+35)"  good={true} />
           <BetRow label="Model 220, book 255" value="▼ UNDER (-35)" good={true} />
           <BetRow label="Model 265, book 255" value="NO BET (+10)"  good={false} />
         </div>
-        <Callout>
-          Implied team total is the strongest single feature. A QB on a team implied for 28
-          points will throw more than one implied for 17. The model also uses rolling passing
-          EPA, air yards per attempt, CPOE, and opponent pass defense.
-        </Callout>
       </Section>
 
-      {/* ── RB Props ── */}
       <Section title="RB PROPS" super="Rushing yards model" accent="var(--silver)">
-        <Callout>
-          Carries and receptions are pretty good predictions. Rushing yards average about
-          27 yards of error.
-        </Callout>
-        <div style={{ display: 'flex', gap: 1, marginBottom: 16 }}>
-          <StatBox label="RUSH YDS MAE"  value="27 yds"  color="var(--silver)" />
-          <StatBox label="CARRIES MAE"   value="4.4"     color="var(--green)" />
-          <StatBox label="RUSH TDS (±1)" value="92.7%"   color="var(--green)" />
+        <Callout>Carries and receptions are the most reliable predictions. Rushing yards average about 27 yards of error.</Callout>
+        <div style={{ display:'flex', gap:1, marginBottom:16 }}>
+          <StatBox label="RUSH YDS MAE"  value="27 yds" color="var(--silver)" />
+          <StatBox label="CARRIES MAE"   value="4.4"    color="var(--green)" />
           <StatBox label="BET THRESHOLD" value="±15 yds" color="var(--gold)" />
         </div>
-        <div style={{ border: '1px solid var(--border)', marginBottom: 16 }}>
-          <BetRow label="Carries and receptions" value="Most reliable, near perfect"    good={true} />
-          <BetRow label="Rushing yards"          value="Use ±15 yd threshold"            good={true} />
-          <BetRow label="Rushing TDs"            value="92.7% within 1 TD"               good={true} />
-          <BetRow label="Receiving yards"        value="Solid for pass-catching backs" />
+        <div style={{ border:'1px solid var(--border)', marginBottom:16 }}>
+          <BetRow label="Carries and receptions" value="Most reliable"        good={true} />
+          <BetRow label="Rushing yards"          value="Use ±15 yd threshold" good={true} />
         </div>
-        <Callout>
-          The threshold is tighter than QB (15 yards vs 25) because RB rushing yards vary
-          less week to week. A 15-yard gap here carries more weight than the same gap on
-          a passing yards prop.
-        </Callout>
       </Section>
 
-      {/* ── WR Props ── */}
       <Section title="WR PROPS" super="Receiving yards model" accent="var(--silver)">
-        <Callout>
-          Target share and air yards share are stable week to week. The model captures
-          scheme tendencies better than game-to-game variance.
-        </Callout>
-        <div style={{ display: 'flex', gap: 1, marginBottom: 16 }}>
-          <StatBox label="REC YDS MAE"    value="27 yds"  color="var(--silver)" />
-          <StatBox label="RECEPTIONS MAE" value="1.66"    color="var(--green)" />
-          <StatBox label="REC TDS EXACT"  value="74.7%"   color="var(--green)" />
+        <Callout>Target share is stable week to week. The model captures scheme tendencies well.</Callout>
+        <div style={{ display:'flex', gap:1, marginBottom:16 }}>
+          <StatBox label="REC YDS MAE"    value="27 yds" color="var(--silver)" />
+          <StatBox label="RECEPTIONS MAE" value="1.66"   color="var(--green)" />
           <StatBox label="BET THRESHOLD"  value="±15 yds" color="var(--gold)" />
         </div>
-        <div style={{ border: '1px solid var(--border)', marginBottom: 16 }}>
-          <BetRow label="Receptions and targets" value="Most reliable bets"             good={true} />
-          <BetRow label="Receiving TDs"          value="74.7% exact"                    good={true} />
-          <BetRow label="Receiving yards"        value="Similar accuracy to RB rushing" good={true} />
-          <BetRow label="Top 3 WRs per team"     value="Sorted by target share" />
+        <div style={{ border:'1px solid var(--border)', marginBottom:16 }}>
+          <BetRow label="Receptions and targets" value="Most reliable"               good={true} />
+          <BetRow label="Receiving yards"        value="Similar accuracy to rushing"  good={true} />
         </div>
-        <Callout>
-          A WR consistently getting 28% of team targets will keep getting roughly that.
-          The model leans heavily on this stability.
-        </Callout>
       </Section>
 
-      {/* ── Bankroll ── */}
       <Section title="BANKROLL" super="Money management" accent="var(--gold)">
-        <Callout>
-          Betting too much per game is the most common mistake. Even a profitable system goes
-          on losing streaks. Flat betting 1–3% per bet gives you enough runway to let the
-          edge play out over hundreds of bets.
-        </Callout>
-        <div style={{ display: 'flex', gap: 1, marginBottom: 16 }}>
-          <StatBox label="RECOMMENDED UNIT" value="1–2%"  color="var(--gold)" />
-          <StatBox label="MAX PER GAME"      value="3%"    color="var(--silver)" />
-          <StatBox label="NEVER EXCEED"      value="5%"    color="var(--red)" />
+        <Callout>Flat betting 1–3% per bet gives enough runway to let edge play out over hundreds of bets.</Callout>
+        <div style={{ display:'flex', gap:1, marginBottom:16 }}>
+          <StatBox label="RECOMMENDED UNIT" value="1–2%"   color="var(--gold)" />
+          <StatBox label="MAX PER GAME"      value="3%"     color="var(--silver)" />
+          <StatBox label="NEVER EXCEED"      value="5%"     color="var(--red)" />
           <StatBox label="TRACK EVERY BET"   value="Always" color="var(--silver-lt)" />
         </div>
-        <div style={{ border: '1px solid var(--border)', marginBottom: 16 }}>
-          <BetRow label="$1,000 bankroll at 1% unit"         value="$10 per bet" />
-          <BetRow label="55% win rate, 100 bets"              value="+$450"      good={true} />
-          <BetRow label="10-game losing streak at 55% (prob)" value="~0.3% (it will happen)" />
-          <BetRow label="10-game losing streak at 5% units"   value="-$500 drawdown" good={false} />
-          <BetRow label="10-game losing streak at 1% units"   value="-$100 drawdown" good={true} />
+        <div style={{ border:'1px solid var(--border)', marginBottom:16 }}>
+          <BetRow label="$1,000 bankroll at 1% unit"       value="$10 per bet" />
+          <BetRow label="55% win rate, 100 bets"            value="+$450"          good={true} />
+          <BetRow label="10-game losing streak at 1% units" value="-$100 drawdown" good={true} />
+          <BetRow label="10-game losing streak at 5% units" value="-$500 drawdown" good={false} />
         </div>
-        <Callout color="var(--gold-dk)">
-          The goal is to be right more than 52.4% of the time over hundreds of bets,
-          to win every week. Discipline over time matters more than any single prediction.
-        </Callout>
       </Section>
     </div>
   )
@@ -1083,58 +838,40 @@ function StrategyTab() {
 export default function App() {
   const [tab, setTab] = useState("winners")
   const tabs = [
-    { id: "winners",  label: "PICKS"    },
-    { id: "props",    label: "PROPS"    },
-    { id: "elo",      label: "RANKINGS" },
-    { id: "about",    label: "STATS"    },
-    { id: "strategy", label: "STRATEGY" },
+    { id:"winners",  label:"PICKS"    },
+    { id:"props",    label:"PROPS"    },
+    { id:"elo",      label:"RANKINGS" },
+    { id:"about",    label:"STATS"    },
+    { id:"strategy", label:"STRATEGY" },
   ]
 
   return (
     <>
       <style>{STYLES}</style>
-      <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
-        <div style={{
-          height: 2,
-          background: 'linear-gradient(90deg, var(--gold-dk), var(--gold) 30%, var(--gold-lt) 50%, var(--gold) 70%, var(--gold-dk))',
-        }} />
-
-        <div style={{ background: 'var(--bg2)', borderBottom: '1px solid var(--border2)' }}>
-          <div style={{ maxWidth: 1000, margin: '0 auto', padding: '0 28px', display: 'flex', alignItems: 'stretch' }}>
-            <div style={{
-              fontFamily: 'var(--font-head)', fontWeight: 700, fontSize: 22,
-              letterSpacing: '0.12em', color: 'var(--gold)',
-              padding: '16px 28px 16px 0', marginRight: 4,
-              borderRight: '1px solid var(--border)',
-              display: 'flex', alignItems: 'center', userSelect: 'none',
-            }}>
+      <div style={{ minHeight:'100vh', background:'var(--bg)' }}>
+        <div style={{ height:2, background:'linear-gradient(90deg, var(--gold-dk), var(--gold) 30%, var(--gold-lt) 50%, var(--gold) 70%, var(--gold-dk))' }} />
+        <div style={{ background:'var(--bg2)', borderBottom:'1px solid var(--border2)' }}>
+          <div style={{ maxWidth:1000, margin:'0 auto', padding:'0 28px', display:'flex', alignItems:'stretch' }}>
+            <div style={{ fontFamily:'var(--font-head)', fontWeight:700, fontSize:22, letterSpacing:'0.12em', color:'var(--gold)', padding:'16px 28px 16px 0', marginRight:4, borderRight:'1px solid var(--border)', display:'flex', alignItems:'center', userSelect:'none' }}>
               JAGINATOR
             </div>
-            <div style={{ display: 'flex' }}>
+            <div style={{ display:'flex' }}>
               {tabs.map(t => (
                 <button key={t.id} onClick={() => setTab(t.id)} style={{
-                  fontFamily: 'var(--font-head)', fontWeight: 500,
-                  fontSize: 13, letterSpacing: '0.15em', padding: '0 20px',
-                  border: 'none', background: 'none',
+                  fontFamily:'var(--font-head)', fontWeight:500, fontSize:13, letterSpacing:'0.15em', padding:'0 20px',
+                  border:'none', background:'none',
                   color: tab === t.id ? 'var(--white)' : 'var(--text-dim)',
                   borderBottom: tab === t.id ? '2px solid var(--gold)' : '2px solid transparent',
-                  cursor: 'pointer', transition: 'color 0.15s',
-                }}>
-                  {t.label}
-                </button>
+                  cursor:'pointer', transition:'color 0.15s',
+                }}>{t.label}</button>
               ))}
             </div>
-            <div style={{
-              marginLeft: 'auto', display: 'flex', alignItems: 'center',
-              fontFamily: 'var(--font-mono)', fontSize: 9,
-              color: 'var(--text-dim)', letterSpacing: '0.2em',
-            }}>
+            <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', fontFamily:'var(--font-mono)', fontSize:9, color:'var(--text-dim)', letterSpacing:'0.2em' }}>
               NFL  ·  1999–2025
             </div>
           </div>
         </div>
-
-        <div style={{ maxWidth: 1000, margin: '0 auto', padding: '32px 28px 64px' }}>
+        <div style={{ maxWidth:1000, margin:'0 auto', padding:'32px 28px 64px' }}>
           {tab === 'winners'  && <WinnersTab />}
           {tab === 'props'    && <PropsTab />}
           {tab === 'elo'      && <EloTab />}
