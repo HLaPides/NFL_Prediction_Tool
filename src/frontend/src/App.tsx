@@ -160,10 +160,27 @@ function ProbBar({ homeProb, homeTeam, awayTeam }) {
   )
 }
 
+// ── Conviction helpers ────────────────────────────────────────────────────────
+// Conviction = how strongly the model disagrees with Vegas
+// Based purely on spread_gap size — larger gap = stronger disagreement
+function getConviction(gap) {
+  if (gap == null) return null
+  const absGap = Math.abs(gap)
+  const MIN_GAP = 3.0
+  const MAX_GAP = 8.0
+  const pct   = Math.round(Math.max(0, Math.min(100, ((absGap - MIN_GAP) / (MAX_GAP - MIN_GAP)) * 100)))
+  const label = pct >= 65 ? 'HIGH' : pct >= 30 ? 'MEDIUM' : 'LOW'
+  const color = pct >= 65 ? 'var(--green)' : pct >= 30 ? 'var(--gold)' : 'var(--text-dim)'
+  const fill  = pct >= 65 ? '#00aa55'      : pct >= 30 ? '#c9a84c'     : '#5a6070'
+  return { pct, label, color, fill }
+}
+
+// ── Game Card ─────────────────────────────────────────────────────────────────
 function GameCard({ game, idx }) {
   const homeWin      = game.predicted_winner === game.home_team
   const gap          = game.spread_gap
-  const hasEdge      = gap !== null && Math.abs(gap) >= 2.5
+  const hasEdge      = gap !== null && Math.abs(gap) >= 3.0
+  const isAtsBet     = hasEdge && game.div_game !== 1
   const winner       = game.predicted_winner
   const loser        = homeWin ? game.away_team : game.home_team
   const isHistory    = !!game.is_historical
@@ -171,10 +188,11 @@ function GameCard({ game, idx }) {
     ? game.predicted_winner === game.actual_winner
     : null
 
+
   const topBorder =
     modelCorrect === true  ? 'var(--green)'  :
     modelCorrect === false ? 'var(--red)'    :
-    hasEdge                ? 'var(--gold)'   :
+    isAtsBet               ? 'var(--gold)'   :
     teamColor(game.home_team)
 
   return (
@@ -184,13 +202,15 @@ function GameCard({ game, idx }) {
       border: '1px solid var(--border)',
       borderTop: `2px solid ${topBorder}`,
       marginBottom: 8,
-      padding: '14px 18px 12px',
+      overflow: 'hidden',
     }}>
+
+      {/* ── History result bar ── */}
       {isHistory && game.actual_winner && (
         <div style={{
           display: 'flex', justifyContent: 'flex-end', alignItems: 'center',
-          gap: 12, marginBottom: 10,
-          paddingBottom: 8, borderBottom: '1px solid var(--border)',
+          gap: 12, padding: '8px 18px',
+          borderBottom: '1px solid var(--border)',
         }}>
           <span style={{
             fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.15em',
@@ -212,7 +232,8 @@ function GameCard({ game, idx }) {
         </div>
       )}
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
+      {/* ── Pick section ── */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 20, padding: '14px 18px 12px' }}>
         <div style={{ flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 4 }}>
             <span style={{
@@ -222,7 +243,7 @@ function GameCard({ game, idx }) {
               {winner}
             </span>
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--gold)', letterSpacing: '0.2em' }}>
-              {homeWin ? 'HOME' : 'AWAY'}  ·  FAVORED
+              {homeWin ? 'HOME' : 'AWAY'}  ·  PICK
             </span>
           </div>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 2 }}>
@@ -268,6 +289,8 @@ function GameCard({ game, idx }) {
           </div>
         )}
       </div>
+
+
     </div>
   )
 }
@@ -454,8 +477,6 @@ function WinnersTab() {
   const weeks   = Array.from({ length: 22 }, (_, i) => i + 1)
 
   const normalizeHistorical = (games) => games.map(g => {
-    // Use home_win_prob from API if available (playoff model provides it directly)
-    // otherwise compute from spread
     const home_win_prob = g.home_win_prob != null
       ? g.home_win_prob
       : (() => { const e = (g.model_spread || 0) * 25; return 1 / (1 + Math.pow(10, -e / 400)) })()
@@ -498,7 +519,9 @@ function WinnersTab() {
     } catch (e) { setStatus(e.response?.data?.detail || 'Refresh failed'); setRefreshing(false) }
   }
 
-  const edgeGames = predictions.filter(p => p.spread_gap != null && Math.abs(p.spread_gap) >= 2.5)
+  const atsBets = predictions.filter(p =>
+    p.spread_gap != null && Math.abs(p.spread_gap) >= 3.0 && p.div_game !== 1
+  )
 
   const selectStyle = {
     fontFamily:'var(--font-head)', fontWeight:500, fontSize:13, letterSpacing:'0.08em', padding:'5px 10px',
@@ -514,9 +537,12 @@ function WinnersTab() {
           <div style={{ fontFamily:'var(--font-head)', fontWeight:700, fontSize:32, color:'var(--white)', letterSpacing:'0.03em', lineHeight:1 }}>
             GAME PICKS
           </div>
-          {edgeGames.length > 0 && !historical && (
-            <div style={{ marginTop:6, fontFamily:'var(--font-mono)', fontSize:10, color:'var(--gold)', letterSpacing:'0.15em' }}>
-              {edgeGames.length} edge{edgeGames.length !== 1 ? 's' : ''} detected
+          {atsBets.length > 0 && !historical && (
+            <div style={{ marginTop:6, display:'flex', alignItems:'center', gap:8 }}>
+              <span style={{ color: 'var(--gold)', fontSize: 12 }}>★</span>
+              <span style={{ fontFamily:'var(--font-mono)', fontSize:10, color:'var(--gold)', letterSpacing:'0.15em' }}>
+                {atsBets.length} ATS bet{atsBets.length !== 1 ? 's' : ''} this week
+              </span>
             </div>
           )}
         </div>
@@ -640,7 +666,7 @@ function AboutTab() {
       <div style={{ fontFamily:'var(--font-head)', fontWeight:700, fontSize:32, color:'var(--white)', letterSpacing:'0.03em', lineHeight:1, marginBottom:18 }}>JAGINATOR</div>
       <Rule style={{ marginBottom:20 }} />
       <p style={{ fontFamily:'var(--font-body)', fontWeight:300, fontSize:15, lineHeight:1.8, color:'var(--text)', marginBottom:28, borderLeft:'2px solid var(--gold-dk)', paddingLeft:16 }}>
-        NFL game prediction engine trained on 26 seasons of data (1999–2025). Combines ELO ratings, player EPA metrics, team rolling stats, and injury data using a stacked XGBoost + Ridge regression architecture with walk-forward validation. During January and February a separate playoff logistic regression model replaces the main model for playoff games.
+        NFL game prediction engine trained on 26 seasons of data (1999–2025). Combines ELO ratings, player EPA metrics, team rolling stats, and injury data using a pure XGBoost architecture trained on ATS margin with walk-forward validation. Vegas spread is included as a peer feature — the model learns its own relationship with the line rather than anchoring to it. During January and February a separate playoff logistic regression model replaces the main model for playoff games.
       </p>
       {summaryStats.length > 0 && (
         <div style={{ display:'grid', gridTemplateColumns:'repeat(4, 1fr)', border:'1px solid var(--border)', marginBottom:28 }}>
@@ -740,39 +766,67 @@ function StrategyTab() {
       </Section>
 
       <Section title="PLAYOFF MODEL" super="January–February" accent="var(--green)">
-        <Callout>During playoff weeks the app automatically switches to a logistic regression model trained specifically on playoff games. The game cards look identical — the playoff model simply replaces the main model's winner prediction and win probability.</Callout>
+        <Callout>During playoff weeks the app automatically switches to a logistic regression model trained specifically on playoff games. The game cards look identical — the playoff model silently replaces the main model's winner prediction and win probability.</Callout>
         <div style={{ display:'flex', gap:1, marginBottom:16 }}>
-          <StatBox label="PLAYOFF ACCURACY" value="65.0%"  color="var(--green)" />
-          <StatBox label="VS MAIN MODEL"     value="+2.0%"  color="var(--silver-lt)" />
+          <StatBox label="PLAYOFF ACCURACY" value="68.9%"  color="var(--green)" />
+          <StatBox label="VS VEGAS"          value="+5.5%"  color="var(--silver-lt)" />
           <StatBox label="CONF CHAMPIONSHIP" value="77.3%"  color="var(--gold)" />
-          <StatBox label="SUPER BOWL"        value="63.6%"  color="var(--gold)" />
+          <StatBox label="SUPER BOWL"        value="68.2%"  color="var(--gold)" />
         </div>
         <div style={{ border:'1px solid var(--border)', marginBottom:16 }}>
-          <BetRow label="Wild Card + Divisional"  value="Same accuracy as main model" />
-          <BetRow label="Conference Championship" value="77.3% — strongest signal"    good={true} />
-          <BetRow label="Super Bowl"              value="63.6% vs 50% Vegas baseline" good={true} />
+          <BetRow label="Wild Card"           value="62.0% — moderate signal" />
+          <BetRow label="Divisional"          value="72.7% — strong signal"    good={true} />
+          <BetRow label="Conference Championship" value="77.3% — strongest signal" good={true} />
+          <BetRow label="Super Bowl"          value="68.2% vs 50% Vegas baseline" good={true} />
         </div>
       </Section>
 
-      <Section title="GAME PICKS" super="Spread model" accent="var(--blue-lt)">
-        <Callout>The model predicts the home team margin using ELO ratings, player EPA, rolling team stats, and injury data.</Callout>
+      <Section title="READING A GAME CARD" super="Spread model" accent="var(--blue-lt)">
+        <Callout>Every card shows a pick — who the model thinks wins. The model and Vegas almost always agree on the winner. Where they differ is the margin: the model often projects a more extreme spread than Vegas. When that gap is large enough, it flags potential value.</Callout>
         <div style={{ display:'flex', gap:1, marginBottom:16 }}>
-          <StatBox label="MODEL ACCURACY" value="66.6%"    color="var(--silver-lt)" />
-          <StatBox label="EDGE VS VEGAS"  value="+0.1%"    color="var(--silver)" />
-          <StatBox label="EDGE THRESHOLD" value="±2.5 pts" color="var(--gold)" />
+          <StatBox label="MODEL ACCURACY"  value="66.2%"    color="var(--silver-lt)" />
+          <StatBox label="ATS WIN RATE"    value="54.8%"    color="var(--gold)" />
+          <StatBox label="BETS / SEASON"   value="~23"      color="var(--silver)" />
+          <StatBox label="EDGE THRESHOLD"  value="±3.0 pts" color="var(--gold)" />
         </div>
         <div style={{ border:'1px solid var(--border)', marginBottom:16 }}>
-          <BetRow label="MODEL"       value="Projected home team margin" />
-          <BetRow label="VEGAS"       value="Book's line (negative = home favored)" />
-          <BetRow label="EDGE"        value="Model minus Vegas" />
-          <BetRow label="Gold border" value="Edge ≥ 2.5 pts" />
+          <BetRow label="PICK"   value="Who the model thinks wins — always shown" />
+          <BetRow label="MODEL"  value="Margin the model projects (e.g. PHI -4.9 = model thinks PHI wins by 4.9)" />
+          <BetRow label="VEGAS"  value="The book's spread (e.g. PHI -1.5 = Vegas thinks PHI wins by 1.5)" />
+          <BetRow label="EDGE"   value="Model minus Vegas — how much the model thinks the picked team is underpriced" />
         </div>
-        <div style={{ border:'1px solid var(--border)', marginBottom:16 }}>
-          <BetRow label="Edge ≥ 2.5 pts, model agrees with Vegas on winner" value="Consider betting"   good={true} />
-          <BetRow label="Edge ≥ 2.5 pts, line moved toward model"            value="Stronger signal"   good={true} />
-          <BetRow label="Edge < 2.5 pts"                                      value="No edge"           good={false} />
-          <BetRow label="Weeks 17–18"                                          value="Skip — motivation variance" good={false} />
-          <BetRow label="Division games"                                       value="Use caution" />
+        <Callout color="var(--gold-dk)">This model is a starting point, not a final answer. Use it alongside your own knowledge — if the model sees a 4 point edge on a team but you know their star WR is out or they just played Thursday, trust your read. The model doesn't watch film. You do. The best bets combine a model edge with a reason you believe it.</Callout>
+        <div style={{ border:'1px solid var(--border)', marginBottom:16, padding:'12px 14px', display:'flex', flexDirection:'column', gap:12 }}>
+          <div>
+            <div style={{ fontFamily:'var(--font-mono)', fontSize:9, color:'var(--green)', letterSpacing:'0.12em', marginBottom:4 }}>EXAMPLE 1 — FAVORITE UNDERVALUED</div>
+            <div style={{ fontFamily:'var(--font-body)', fontSize:13, color:'var(--text)', lineHeight:1.6 }}>
+              PHI vs KC. Vegas has PHI as a 1.5 point favorite. The model projects PHI wins by 4.9 — an EDGE of 3.4. Vegas thinks this is a close game. The model thinks PHI blows them out.
+            </div>
+            <div style={{ fontFamily:'var(--font-body)', fontSize:13, color:'var(--silver-lt)', lineHeight:1.6, marginTop:6 }}>
+              <strong>Trust the model:</strong> Bet PHI -1.5. You need PHI to win by 2 or more to cash. The model says they win by nearly 5 — plenty of cushion.
+            </div>
+            <div style={{ fontFamily:'var(--font-body)', fontSize:13, color:'var(--silver)', lineHeight:1.6, marginTop:4 }}>
+              <strong>Trust Vegas:</strong> No bet — if you think it's a 1.5 point game, the spread is already right.
+            </div>
+          </div>
+          <div style={{ borderTop:'1px solid var(--border)', paddingTop:12 }}>
+            <div style={{ fontFamily:'var(--font-mono)', fontSize:9, color:'var(--green)', letterSpacing:'0.12em', marginBottom:4 }}>EXAMPLE 2 — UNDERDOG UNDERVALUED</div>
+            <div style={{ fontFamily:'var(--font-body)', fontSize:13, color:'var(--text)', lineHeight:1.6 }}>
+              MIA vs CLE. Vegas has MIA favored by 3. The model only sees MIA winning by 0.7 — an EDGE of 3.2 on CLE. Vegas is giving CLE way more credit than the model thinks they deserve, but the model still likes MIA to win.
+            </div>
+            <div style={{ fontFamily:'var(--font-body)', fontSize:13, color:'var(--silver-lt)', lineHeight:1.6, marginTop:6 }}>
+              <strong>Trust the model:</strong> Bet CLE +3. The model has this as nearly a pick-em — CLE getting 3 free points is value. CLE wins or loses by 1 or 2 and you still cash.
+            </div>
+            <div style={{ fontFamily:'var(--font-body)', fontSize:13, color:'var(--silver)', lineHeight:1.6, marginTop:4 }}>
+              <strong>Trust Vegas:</strong> No bet — if you think MIA genuinely wins by 3+, the line is fair.
+            </div>
+          </div>
+          <div style={{ borderTop:'1px solid var(--border)', paddingTop:12 }}>
+            <div style={{ fontFamily:'var(--font-mono)', fontSize:9, color:'var(--text-dim)', letterSpacing:'0.12em', marginBottom:4 }}>NO EDGE — CONSIDER PARLAYS</div>
+            <div style={{ fontFamily:'var(--font-body)', fontSize:13, color:'var(--text-dim)', lineHeight:1.6 }}>
+              No EDGE means the model and Vegas agree on the margin — no spread value identified. These games are still worth watching for moneyline parlays. The model's 66% accuracy on picking the winner means stacking 2–3 high-confidence picks into a parlay can produce value even without a spread edge. Stick to games where win probability is 65%+.
+            </div>
+          </div>
         </div>
       </Section>
 
@@ -816,10 +870,10 @@ function StrategyTab() {
       </Section>
 
       <Section title="BANKROLL" super="Money management" accent="var(--gold)">
-        <Callout>Flat betting 1–3% per bet gives enough runway to let edge play out over hundreds of bets.</Callout>
+        <Callout>Flat betting 1–3% per bet gives enough runway to let edge play out over hundreds of bets. Scale up on HIGH confidence picks, down on MEDIUM.</Callout>
         <div style={{ display:'flex', gap:1, marginBottom:16 }}>
           <StatBox label="RECOMMENDED UNIT" value="1–2%"   color="var(--gold)" />
-          <StatBox label="MAX PER GAME"      value="3%"     color="var(--silver)" />
+          <StatBox label="HIGH CONF UNIT"    value="2–3%"   color="var(--green)" />
           <StatBox label="NEVER EXCEED"      value="5%"     color="var(--red)" />
           <StatBox label="TRACK EVERY BET"   value="Always" color="var(--silver-lt)" />
         </div>
