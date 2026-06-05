@@ -1,5 +1,15 @@
+# Data
 nflreadpy@git+https://github.com/nflverse/nflreadpy
 polars
 pyarrow
 pandas
+numpy
 requests
+
+# Models
+xgboost
+scikit-learn
+
+# API
+fastapi
+uvicorn[standard]
