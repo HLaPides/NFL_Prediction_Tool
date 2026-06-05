@@ -56,7 +56,7 @@ const STYLES = `
   input[type=number] { -moz-appearance: textfield; }
 `
 
-const TEAM_NAMES = {
+const TEAM_NAMES: Record<string, string> = {
   ARI:'Arizona Cardinals',   ATL:'Atlanta Falcons',     BAL:'Baltimore Ravens',
   BUF:'Buffalo Bills',       CAR:'Carolina Panthers',   CHI:'Chicago Bears',
   CIN:'Cincinnati Bengals',  CLE:'Cleveland Browns',    DAL:'Dallas Cowboys',
@@ -70,7 +70,7 @@ const TEAM_NAMES = {
   TEN:'Tennessee Titans',    WAS:'Washington Commanders',
 }
 
-const RAW_COLORS = {
+const RAW_COLORS: Record<string, string> = {
   KC:'#E31837', SF:'#AA0000', BUF:'#00338D', DAL:'#003594', PHI:'#004C54',
   BAL:'#241773', CIN:'#FB4F14', DET:'#0076B6', MIA:'#008E97', GB:'#203731',
   SEA:'#69BE28', LAC:'#0080C6', NYJ:'#125740', NE:'#002244', PIT:'#FFB612',
@@ -80,7 +80,7 @@ const RAW_COLORS = {
   NYG:'#0B2265', CLE:'#311D00',
 }
 
-const DISPLAY_OVERRIDES = {
+const DISPLAY_OVERRIDES: Record<string, string> = {
   CHI:'#4a6fa5', NE:'#4a7abf',  NYG:'#3a5fa5', NYJ:'#2d7a5a',
   DAL:'#4a78cc', BUF:'#2255b8', BAL:'#6644bb', IND:'#3366cc',
   LA: '#4a78cc', GB: '#3a7a4a', HOU:'#4a7a8a', CLE:'#7a4a2a',
@@ -88,11 +88,27 @@ const DISPLAY_OVERRIDES = {
   ATL:'#cc2233', ARI:'#cc2233',
 }
 
-function teamColor(team) {
+function teamColor(team: string): string {
   return DISPLAY_OVERRIDES[team] || RAW_COLORS[team] || '#4a80ff'
 }
 
-function Rule({ color = 'var(--gold)', style = {} }) {
+// ── Week label — accounts for 16-game era (pre-2021) vs 17-game era (2021+) ──
+function getWeekLabel(week: number, season: number | null): string {
+  if (season !== null && season >= 2021) {
+    if (week === 19) return 'WILD CARD'
+    if (week === 20) return 'DIVISIONAL'
+    if (week === 21) return 'CONF CHAMP'
+    if (week === 22) return 'SUPER BOWL'
+  } else {
+    if (week === 18) return 'WILD CARD'
+    if (week === 19) return 'DIVISIONAL'
+    if (week === 20) return 'CONF CHAMP'
+    if (week === 21) return 'SUPER BOWL'
+  }
+  return `WK ${week}`
+}
+
+function Rule({ color = 'var(--gold)', style = {} }: { color?: string; style?: React.CSSProperties }) {
   return (
     <div style={{
       height: 1,
@@ -102,7 +118,7 @@ function Rule({ color = 'var(--gold)', style = {} }) {
   )
 }
 
-function Super({ children, color = 'var(--gold)', style = {} }) {
+function Super({ children, color = 'var(--gold)', style = {} }: { children: React.ReactNode; color?: string; style?: React.CSSProperties }) {
   return (
     <div style={{
       fontFamily: 'var(--font-mono)', fontSize: 10,
@@ -114,7 +130,7 @@ function Super({ children, color = 'var(--gold)', style = {} }) {
   )
 }
 
-function Pill({ label, value, color = 'var(--silver)' }) {
+function Pill({ label, value, color = 'var(--silver)' }: { label: string; value: string; color?: string }) {
   return (
     <div style={{
       display: 'flex', flexDirection: 'column', alignItems: 'center',
@@ -130,7 +146,7 @@ function Pill({ label, value, color = 'var(--silver)' }) {
   )
 }
 
-function ProbBar({ homeProb, homeTeam, awayTeam }) {
+function ProbBar({ homeProb, homeTeam, awayTeam }: { homeProb: number; homeTeam: string; awayTeam: string }) {
   const homePct = Math.round(homeProb * 100)
   const awayPct = 100 - homePct
   const hColor  = teamColor(homeTeam)
@@ -160,23 +176,8 @@ function ProbBar({ homeProb, homeTeam, awayTeam }) {
   )
 }
 
-// ── Conviction helpers ────────────────────────────────────────────────────────
-// Conviction = how strongly the model disagrees with Vegas
-// Based purely on spread_gap size — larger gap = stronger disagreement
-function getConviction(gap) {
-  if (gap == null) return null
-  const absGap = Math.abs(gap)
-  const MIN_GAP = 3.0
-  const MAX_GAP = 8.0
-  const pct   = Math.round(Math.max(0, Math.min(100, ((absGap - MIN_GAP) / (MAX_GAP - MIN_GAP)) * 100)))
-  const label = pct >= 65 ? 'HIGH' : pct >= 30 ? 'MEDIUM' : 'LOW'
-  const color = pct >= 65 ? 'var(--green)' : pct >= 30 ? 'var(--gold)' : 'var(--text-dim)'
-  const fill  = pct >= 65 ? '#00aa55'      : pct >= 30 ? '#c9a84c'     : '#5a6070'
-  return { pct, label, color, fill }
-}
-
 // ── Game Card ─────────────────────────────────────────────────────────────────
-function GameCard({ game, idx }) {
+function GameCard({ game, idx }: { game: any; idx: number }) {
   const homeWin      = game.predicted_winner === game.home_team
   const gap          = game.spread_gap
   const hasEdge      = gap !== null && Math.abs(gap) >= 3.0
@@ -187,7 +188,6 @@ function GameCard({ game, idx }) {
   const modelCorrect = isHistory && game.actual_winner
     ? game.predicted_winner === game.actual_winner
     : null
-
 
   const topBorder =
     modelCorrect === true  ? 'var(--green)'  :
@@ -204,7 +204,6 @@ function GameCard({ game, idx }) {
       marginBottom: 8,
       overflow: 'hidden',
     }}>
-
       {/* ── History result bar ── */}
       {isHistory && game.actual_winner && (
         <div style={{
@@ -289,14 +288,14 @@ function GameCard({ game, idx }) {
           </div>
         )}
       </div>
-
-
     </div>
   )
 }
 
 // ── Props Card ────────────────────────────────────────────────────────────────
-function PropCard({ player, idx, statKey, statLabel, threshold = 25 }) {
+function PropCard({ player, idx, statKey, statLabel, threshold = 25 }: {
+  player: any; idx: number; statKey: string; statLabel: string; threshold?: number
+}) {
   const [propLine, setPropLine] = useState('')
 
   const pred    = player[`pred_${statKey}`]
@@ -354,14 +353,14 @@ function PropCard({ player, idx, statKey, statLabel, threshold = 25 }) {
         <div style={{ display: 'flex', gap: 0, borderLeft: '1px solid var(--border)' }}>
           {player.pred_passing_yards   != null && <Pill label="PROJ YDS"  value={player.pred_passing_yards?.toFixed(0)   ?? '—'} color="var(--silver-lt)" />}
           {player.pred_passing_tds     != null && <Pill label="PROJ TDS"  value={player.pred_passing_tds?.toFixed(1)     ?? '—'} color="var(--silver)" />}
-          {player.pred_attempts        != null && <Pill label="PROJ ATT"  value={player.pred_attempts?.toFixed(0)         ?? '—'} color="var(--silver)" />}
+          {player.pred_attempts        != null && <Pill label="PROJ ATT"  value={player.pred_attempts?.toFixed(0)        ?? '—'} color="var(--silver)" />}
           {player.pred_rushing_yards   != null && <Pill label="RUSH YDS"  value={player.pred_rushing_yards?.toFixed(0)   ?? '—'} color="var(--silver-lt)" />}
           {player.pred_rushing_tds     != null && <Pill label="RUSH TDS"  value={player.pred_rushing_tds?.toFixed(1)     ?? '—'} color="var(--silver)" />}
-          {player.pred_carries         != null && <Pill label="CARRIES"   value={player.pred_carries?.toFixed(0)          ?? '—'} color="var(--silver)" />}
+          {player.pred_carries         != null && <Pill label="CARRIES"   value={player.pred_carries?.toFixed(0)         ?? '—'} color="var(--silver)" />}
           {player.pred_receiving_yards != null && <Pill label="REC YDS"   value={player.pred_receiving_yards?.toFixed(0) ?? '—'} color="var(--silver-lt)" />}
           {player.pred_receiving_tds   != null && <Pill label="REC TDS"   value={player.pred_receiving_tds?.toFixed(1)   ?? '—'} color="var(--silver)" />}
-          {player.pred_receptions      != null && <Pill label="REC"       value={player.pred_receptions?.toFixed(1)       ?? '—'} color="var(--silver)" />}
-          {player.pred_targets         != null && <Pill label="TARGETS"   value={player.pred_targets?.toFixed(1)          ?? '—'} color="var(--silver)" />}
+          {player.pred_receptions      != null && <Pill label="REC"       value={player.pred_receptions?.toFixed(1)      ?? '—'} color="var(--silver)" />}
+          {player.pred_targets         != null && <Pill label="TARGETS"   value={player.pred_targets?.toFixed(1)         ?? '—'} color="var(--silver)" />}
           <Pill label="IMP TOTAL" value={player.implied_team_total?.toFixed(1) ?? '—'} color="var(--text-dim)" />
         </div>
 
@@ -401,7 +400,7 @@ function PropCard({ player, idx, statKey, statLabel, threshold = 25 }) {
 }
 
 // ── Props Tab ─────────────────────────────────────────────────────────────────
-const POSITION_CONFIG = {
+const POSITION_CONFIG: Record<string, any> = {
   qb: { label:'QB PROPS', super:'Quarterback projections', endpoint:'/props/qb', statKey:'passing_yards',  statLabel:'PASS YDS', threshold:25, legend:['▲ OVER ≥ +25 yds','▼ UNDER ≤ −25 yds','NO BET < 25 yds gap'] },
   rb: { label:'RB PROPS', super:'Running back projections', endpoint:'/props/rb', statKey:'rushing_yards',  statLabel:'RUSH YDS', threshold:15, legend:['▲ OVER ≥ +15 yds','▼ UNDER ≤ −15 yds','NO BET < 15 yds gap'] },
   wr: { label:'WR PROPS', super:'Wide receiver projections', endpoint:'/props/wr', statKey:'receiving_yards', statLabel:'REC YDS',  threshold:15, legend:['▲ OVER ≥ +15 yds','▼ UNDER ≤ −15 yds','NO BET < 15 yds gap'] },
@@ -409,7 +408,7 @@ const POSITION_CONFIG = {
 
 function PropsTab() {
   const [pos, setPos]         = useState('qb')
-  const [data, setData]       = useState({})
+  const [data, setData]       = useState<Record<string, any[]>>({})
   const [loading, setLoading] = useState(false)
   const [status, setStatus]   = useState('')
   const cfg = POSITION_CONFIG[pos]
@@ -423,7 +422,7 @@ function PropsTab() {
   }, [pos])
 
   const players = data[pos] || []
-  const posTabStyle = (id) => ({
+  const posTabStyle = (id: string) => ({
     fontFamily:'var(--font-head)', fontWeight:500, fontSize:12, letterSpacing:'0.12em', padding:'6px 18px',
     border:'none', cursor:'pointer', transition:'all 0.15s',
     background: pos === id ? 'var(--gold)' : 'transparent',
@@ -465,23 +464,39 @@ function PropsTab() {
 
 // ── Picks Tab ─────────────────────────────────────────────────────────────────
 function WinnersTab() {
-  const [predictions, setPredictions] = useState([])
+  const [predictions, setPredictions] = useState<any[]>([])
   const [loading, setLoading]         = useState(true)
   const [refreshing, setRefreshing]   = useState(false)
   const [status, setStatus]           = useState('')
   const [historical, setHistorical]   = useState(false)
-  const [histSeason, setHistSeason]   = useState(2024)
-  const [histWeek,   setHistWeek]     = useState(1)
+  const [histSeason, setHistSeason]   = useState<number | null>(null)
+  const [histWeek,   setHistWeek]     = useState<number | null>(null)
 
   const seasons = Array.from({ length: 25 }, (_, i) => 2025 - i)
-  const weeks   = Array.from({ length: 22 }, (_, i) => i + 1)
-
-  const normalizeHistorical = (games) => games.map(g => {
-    const home_win_prob = g.home_win_prob != null
-      ? g.home_win_prob
-      : (() => { const e = (g.model_spread || 0) * 25; return 1 / (1 + Math.pow(10, -e / 400)) })()
-    return { ...g, predicted_winner: g.model_winner, home_win_prob, is_historical: true }
-  })
+  const weeks = Array.from(
+  { length: histSeason !== null && histSeason >= 2021 ? 22 : 21 },
+  (_, i) => i + 1
+)
+const normalizeHistorical = (games: any[]) => games.map(g => {
+  const home_win_prob = g.home_win_prob != null
+    ? g.home_win_prob
+    : (() => {
+        const mag  = Math.abs(g.model_spread || 0)
+        const prob = 1 / (1 + Math.pow(10, -mag / 28))
+        return g.model_winner === g.home_team ? prob : 1 - prob
+      })()
+  return { ...g, predicted_winner: g.model_winner, home_win_prob, is_historical: true }
+})
+  // Derive week label from actual game_type in loaded data — handles all eras correctly
+  const weekLabel = (() => {
+    if (!historical || !predictions.length) return null
+    const types = [...new Set(predictions.map((p: any) => p.game_type).filter(Boolean))]
+    if (types.includes('SB'))  return 'SUPER BOWL'
+    if (types.includes('CON')) return 'CONF CHAMPIONSHIP'
+    if (types.includes('DIV')) return 'DIVISIONAL'
+    if (types.includes('WC'))  return 'WILD CARD'
+    return histSeason && histWeek ? `WEEK ${histWeek}` : 'HISTORY'
+  })()
 
   const loadLive = async () => {
     setLoading(true)
@@ -492,13 +507,47 @@ function WinnersTab() {
     finally  { setLoading(false) }
   }
 
-  const loadHistoricalWeek = async (season, week) => {
+  const loadHistoricalWeek = async (season: number, week: number) => {
     setLoading(true)
     try {
       const res = await axios.get(`${API}/predictions/historical`, { params: { season, week } })
       setPredictions(normalizeHistorical(res.data))
     } catch { setStatus('Connection error. Verify api.py is running.') }
     finally  { setLoading(false) }
+  }
+
+  // Auto-detect the most recent recorded season/week on first HISTORY click
+  const detectLatest = async () => {
+    setLoading(true)
+    setStatus('Finding latest week...')
+    try {
+      const statsRes = await axios.get(`${API}/stats`)
+      const seasonNums = statsRes.data
+        .filter((s: any) => s.season !== 'All-time')
+        .map((s: any) => Number(s.season))
+      const latestSeason = Math.max(...seasonNums)
+
+      // Walk back from week 22 until we find recorded data
+      for (let week = 22; week >= 1; week--) {
+        const check = await axios.get(`${API}/predictions/historical`, {
+          params: { season: latestSeason, week }
+        })
+        if (check.data.length > 0) {
+          setHistSeason(latestSeason)
+          setHistWeek(week)
+          setStatus('')
+          setPredictions(normalizeHistorical(check.data))
+          return
+        }
+      }
+      setHistSeason(latestSeason)
+      setHistWeek(22)
+      setStatus('No recorded predictions found for this season.')
+    } catch {
+      setStatus('Could not detect latest week.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => { loadLive() }, [])
@@ -516,30 +565,34 @@ function WinnersTab() {
         }
       }
       poll()
-    } catch (e) { setStatus(e.response?.data?.detail || 'Refresh failed'); setRefreshing(false) }
+    } catch (e: any) { setStatus(e.response?.data?.detail || 'Refresh failed'); setRefreshing(false) }
   }
 
   const atsBets = predictions.filter(p =>
     p.spread_gap != null && Math.abs(p.spread_gap) >= 3.0 && p.div_game !== 1
   )
 
-  const selectStyle = {
+  const selectStyle: React.CSSProperties = {
     fontFamily:'var(--font-head)', fontWeight:500, fontSize:13, letterSpacing:'0.08em', padding:'5px 10px',
     background:'var(--bg3)', color:'var(--white)', border:'1px solid var(--border2)',
-    cursor:'pointer', outline:'none', appearance:'none', WebkitAppearance:'none',
+    cursor:'pointer', outline:'none', appearance:'none',
   }
 
   return (
     <div>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-end', marginBottom:18 }}>
         <div>
-          <Super>{historical ? `${histSeason} · WEEK ${histWeek}` : "Week's predictions"}</Super>
+          <Super>
+            {historical
+              ? histSeason && weekLabel ? `${histSeason} · ${weekLabel}` : 'HISTORY'
+              : "Week's predictions"}
+          </Super>
           <div style={{ fontFamily:'var(--font-head)', fontWeight:700, fontSize:32, color:'var(--white)', letterSpacing:'0.03em', lineHeight:1 }}>
             GAME PICKS
           </div>
           {atsBets.length > 0 && !historical && (
             <div style={{ marginTop:6, display:'flex', alignItems:'center', gap:8 }}>
-              <span style={{ color: 'var(--gold)', fontSize: 12 }}>★</span>
+              <span style={{ color:'var(--gold)', fontSize:12 }}>★</span>
               <span style={{ fontFamily:'var(--font-mono)', fontSize:10, color:'var(--gold)', letterSpacing:'0.15em' }}>
                 {atsBets.length} ATS bet{atsBets.length !== 1 ? 's' : ''} this week
               </span>
@@ -549,29 +602,59 @@ function WinnersTab() {
 
         <div style={{ display:'flex', alignItems:'center', gap:8 }}>
           <div style={{ display:'flex', border:'1px solid var(--border2)', overflow:'hidden' }}>
-            {[{ id:false, label:'LIVE' },{ id:true, label:'HISTORY' }].map(m => (
-              <button key={String(m.id)} onClick={() => { setHistorical(m.id); if (!m.id) { setStatus(''); loadLive() } }} style={{
-                fontFamily:'var(--font-head)', fontWeight:500, fontSize:11, letterSpacing:'0.12em', padding:'6px 14px',
-                border:'none', cursor:'pointer', transition:'all 0.15s',
-                background: historical === m.id ? 'var(--gold)' : 'transparent',
-                color: historical === m.id ? 'var(--bg)' : 'var(--text-dim)',
-              }}>{m.label}</button>
+            {[{ id:false, label:'LIVE' }, { id:true, label:'HISTORY' }].map(m => (
+              <button
+                key={String(m.id)}
+                onClick={() => {
+                  setHistorical(m.id)
+                  if (!m.id) { setStatus(''); loadLive() }
+                  else { detectLatest() }
+                }}
+                style={{
+                  fontFamily:'var(--font-head)', fontWeight:500, fontSize:11, letterSpacing:'0.12em', padding:'6px 14px',
+                  border:'none', cursor:'pointer', transition:'all 0.15s',
+                  background: historical === m.id ? 'var(--gold)' : 'transparent',
+                  color: historical === m.id ? 'var(--bg)' : 'var(--text-dim)',
+                }}
+              >
+                {m.label}
+              </button>
             ))}
           </div>
-          {historical ? (
+
+          {historical && (
             <>
-              <select value={histSeason} onChange={e => setHistSeason(+e.target.value)} style={selectStyle}>
+              <select
+                value={histSeason ?? ''}
+                onChange={e => setHistSeason(Number(e.target.value))}
+                style={selectStyle}
+              >
                 {seasons.map(s => <option key={s} value={s}>{s}</option>)}
               </select>
-              <select value={histWeek} onChange={e => setHistWeek(+e.target.value)} style={selectStyle}>
-                {weeks.map(w => <option key={w} value={w}>WK {w}</option>)}
+              <select
+                value={histWeek ?? ''}
+                onChange={e => setHistWeek(Number(e.target.value))}
+                style={selectStyle}
+              >
+                {weeks.map(w => (
+                  <option key={w} value={w}>
+                    {getWeekLabel(w, histSeason)}
+                  </option>
+                ))}
               </select>
-              <button onClick={() => { setStatus(''); loadHistoricalWeek(histSeason, histWeek) }} style={{
-                fontFamily:'var(--font-head)', fontWeight:500, fontSize:13, letterSpacing:'0.15em', padding:'8px 20px',
-                background:'transparent', border:'1px solid var(--gold)', color:'var(--gold)', cursor:'pointer',
-              }}>GO</button>
+              <button
+                onClick={() => { if (histSeason && histWeek) { setStatus(''); loadHistoricalWeek(histSeason, histWeek) } }}
+                style={{
+                  fontFamily:'var(--font-head)', fontWeight:500, fontSize:13, letterSpacing:'0.15em', padding:'8px 20px',
+                  background:'transparent', border:'1px solid var(--gold)', color:'var(--gold)', cursor:'pointer',
+                }}
+              >
+                GO
+              </button>
             </>
-          ) : (
+          )}
+
+          {!historical && (
             <button onClick={refresh} disabled={refreshing} style={{
               fontFamily:'var(--font-head)', fontWeight:500, fontSize:13, letterSpacing:'0.15em', padding:'8px 20px',
               background:'transparent',
@@ -604,7 +687,7 @@ function WinnersTab() {
 
 // ── Rankings Tab ──────────────────────────────────────────────────────────────
 function EloTab() {
-  const [ratings, setRatings] = useState([])
+  const [ratings, setRatings] = useState<any[]>([])
   useEffect(() => { axios.get(`${API}/elo`).then(r => setRatings(r.data)).catch(() => {}) }, [])
   const max = ratings[0]?.elo ?? 1800
   const min = ratings[ratings.length - 1]?.elo ?? 1200
@@ -618,12 +701,12 @@ function EloTab() {
         <span>RK</span><span>TEAM</span><span /><span style={{ textAlign:'right' }}>RATING</span><span style={{ textAlign:'right' }}>TIER</span>
       </div>
       {ratings.map((r, i) => {
-        const pct  = ((r.elo - min) / (max - min)) * 100
-        const tier = r.elo >= 1650 ? { label:'I',   color:'var(--gold)' }
-                   : r.elo >= 1560 ? { label:'II',  color:'var(--silver-lt)' }
-                   : r.elo >= 1470 ? { label:'III', color:'var(--silver)' }
-                   : r.elo >= 1400 ? { label:'IV',  color:'var(--text-dim)' }
-                   :                 { label:'V',   color:'#4a4a60' }
+        const pct      = ((r.elo - min) / (max - min)) * 100
+        const tier     = r.elo >= 1650 ? { label:'I',   color:'var(--gold)' }
+                       : r.elo >= 1560 ? { label:'II',  color:'var(--silver-lt)' }
+                       : r.elo >= 1470 ? { label:'III', color:'var(--silver)' }
+                       : r.elo >= 1400 ? { label:'IV',  color:'var(--text-dim)' }
+                       :                 { label:'V',   color:'#4a4a60' }
         const fullName = TEAM_NAMES[r.team] || r.team
         const accent   = teamColor(r.team)
         return (
@@ -649,15 +732,15 @@ function EloTab() {
 
 // ── Stats Tab ─────────────────────────────────────────────────────────────────
 function AboutTab() {
-  const [stats, setStats] = useState([])
+  const [stats, setStats] = useState<any[]>([])
   useEffect(() => { axios.get(`${API}/stats`).then(r => setStats(r.data)).catch(() => {}) }, [])
   const allTime = stats.find(s => s.season === 'All-time')
   const edge    = allTime ? (allTime.model_accuracy - allTime.vegas_accuracy) * 100 : null
   const summaryStats = allTime ? [
-    { label:'GAMES ANALYZED', value:allTime.games.toLocaleString(),                         color:'var(--silver-lt)' },
-    { label:'MODEL ACCURACY', value:`${(allTime.model_accuracy * 100).toFixed(1)}%`,        color:'var(--silver-lt)' },
-    { label:'VEGAS ACCURACY', value:`${(allTime.vegas_accuracy * 100).toFixed(1)}%`,        color:'var(--silver)' },
-    { label:'EDGE VS VEGAS',  value:`${edge > 0 ? '+' : ''}${edge?.toFixed(1)}%`,           color: edge > 0 ? 'var(--gold)' : 'var(--red)' },
+    { label:'GAMES ANALYZED', value:allTime.games.toLocaleString(),                        color:'var(--silver-lt)' },
+    { label:'MODEL ACCURACY', value:`${(allTime.model_accuracy * 100).toFixed(1)}%`,       color:'var(--silver-lt)' },
+    { label:'VEGAS ACCURACY', value:`${(allTime.vegas_accuracy * 100).toFixed(1)}%`,       color:'var(--silver)' },
+    { label:'EDGE VS VEGAS',  value:`${edge! > 0 ? '+' : ''}${edge?.toFixed(1)}%`,         color: edge! > 0 ? 'var(--gold)' : 'var(--red)' },
   ] : []
 
   return (
@@ -701,7 +784,7 @@ function AboutTab() {
 }
 
 // ── Strategy Tab helpers ──────────────────────────────────────────────────────
-function StatBox({ label, value, color = 'var(--gold)' }) {
+function StatBox({ label, value, color = 'var(--gold)' }: { label: string; value: string; color?: string }) {
   return (
     <div style={{ padding:'14px 18px', background:'var(--bg3)', border:'1px solid var(--border)', borderTop:`2px solid ${color}`, flex:1 }}>
       <div style={{ fontFamily:'var(--font-mono)', fontSize:9, color:'var(--text-dim)', letterSpacing:'0.15em', marginBottom:6 }}>{label}</div>
@@ -710,7 +793,7 @@ function StatBox({ label, value, color = 'var(--gold)' }) {
   )
 }
 
-function Section({ title, super: superLabel, children, accent = 'var(--gold)' }) {
+function Section({ title, super: superLabel, children, accent = 'var(--gold)' }: { title: string; super: string; children: React.ReactNode; accent?: string }) {
   return (
     <div style={{ marginBottom:40 }}>
       <Super color={accent} style={{ marginBottom:6 }}>{superLabel}</Super>
@@ -721,7 +804,7 @@ function Section({ title, super: superLabel, children, accent = 'var(--gold)' })
   )
 }
 
-function Callout({ children, color = 'var(--gold-dk)' }) {
+function Callout({ children, color = 'var(--gold-dk)' }: { children: React.ReactNode; color?: string }) {
   return (
     <div style={{ borderLeft:`2px solid ${color}`, paddingLeft:16, marginBottom:16, fontFamily:'var(--font-body)', fontWeight:300, fontSize:14, lineHeight:1.8, color:'var(--text)' }}>
       {children}
@@ -729,7 +812,7 @@ function Callout({ children, color = 'var(--gold-dk)' }) {
   )
 }
 
-function BetRow({ label, value, good = null }) {
+function BetRow({ label, value, good = null }: { label: string; value: string; good?: boolean | null }) {
   const color = good === true ? 'var(--green)' : good === false ? 'var(--red)' : 'var(--silver)'
   return (
     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 14px', borderBottom:'1px solid var(--border)', fontFamily:'var(--font-mono)', fontSize:11 }}>
@@ -774,10 +857,10 @@ function StrategyTab() {
           <StatBox label="SUPER BOWL"        value="68.2%"  color="var(--gold)" />
         </div>
         <div style={{ border:'1px solid var(--border)', marginBottom:16 }}>
-          <BetRow label="Wild Card"           value="62.0% — moderate signal" />
-          <BetRow label="Divisional"          value="72.7% — strong signal"    good={true} />
-          <BetRow label="Conference Championship" value="77.3% — strongest signal" good={true} />
-          <BetRow label="Super Bowl"          value="68.2% vs 50% Vegas baseline" good={true} />
+          <BetRow label="Wild Card"               value="62.0% — moderate signal" />
+          <BetRow label="Divisional"              value="72.7% — strong signal"       good={true} />
+          <BetRow label="Conference Championship" value="77.3% — strongest signal"    good={true} />
+          <BetRow label="Super Bowl"              value="68.2% vs 50% Vegas baseline" good={true} />
         </div>
       </Section>
 
@@ -790,10 +873,10 @@ function StrategyTab() {
           <StatBox label="EDGE THRESHOLD"  value="±3.0 pts" color="var(--gold)" />
         </div>
         <div style={{ border:'1px solid var(--border)', marginBottom:16 }}>
-          <BetRow label="PICK"   value="Who the model thinks wins — always shown" />
-          <BetRow label="MODEL"  value="Margin the model projects (e.g. PHI -4.9 = model thinks PHI wins by 4.9)" />
-          <BetRow label="VEGAS"  value="The book's spread (e.g. PHI -1.5 = Vegas thinks PHI wins by 1.5)" />
-          <BetRow label="EDGE"   value="Model minus Vegas — how much the model thinks the picked team is underpriced" />
+          <BetRow label="PICK"  value="Who the model thinks wins — always shown" />
+          <BetRow label="MODEL" value="Margin the model projects (e.g. PHI -4.9 = model thinks PHI wins by 4.9)" />
+          <BetRow label="VEGAS" value="The book's spread (e.g. PHI -1.5 = Vegas thinks PHI wins by 1.5)" />
+          <BetRow label="EDGE"  value="Model minus Vegas — how much the model thinks the picked team is underpriced" />
         </div>
         <Callout color="var(--gold-dk)">This model is a starting point, not a final answer. Use it alongside your own knowledge — if the model sees a 4 point edge on a team but you know their star WR is out or they just played Thursday, trust your read. The model doesn't watch film. You do. The best bets combine a model edge with a reason you believe it.</Callout>
         <div style={{ border:'1px solid var(--border)', marginBottom:16, padding:'12px 14px', display:'flex', flexDirection:'column', gap:12 }}>
@@ -812,7 +895,7 @@ function StrategyTab() {
           <div style={{ borderTop:'1px solid var(--border)', paddingTop:12 }}>
             <div style={{ fontFamily:'var(--font-mono)', fontSize:9, color:'var(--green)', letterSpacing:'0.12em', marginBottom:4 }}>EXAMPLE 2 — UNDERDOG UNDERVALUED</div>
             <div style={{ fontFamily:'var(--font-body)', fontSize:13, color:'var(--text)', lineHeight:1.6 }}>
-              MIA vs CLE. Vegas has MIA favored by 3. The model only sees MIA winning by 0.7 — an EDGE of 3.2 on CLE. Vegas is giving CLE way more credit than the model thinks they deserve, but the model still likes MIA to win.
+              MIA vs CLE. Vegas has MIA favored by 3. The model only sees MIA winning by 0.7 — an EDGE of 3.2 on CLE. Vegas is giving MIA way more credit than the model thinks they deserve, but the model still likes MIA to win.
             </div>
             <div style={{ fontFamily:'var(--font-body)', fontSize:13, color:'var(--silver-lt)', lineHeight:1.6, marginTop:6 }}>
               <strong>Trust the model:</strong> Bet CLE +3. The model has this as nearly a pick-em — CLE getting 3 free points is value. CLE wins or loses by 1 or 2 and you still cash.
@@ -846,8 +929,8 @@ function StrategyTab() {
       <Section title="RB PROPS" super="Rushing yards model" accent="var(--silver)">
         <Callout>Carries and receptions are the most reliable predictions. Rushing yards average about 27 yards of error.</Callout>
         <div style={{ display:'flex', gap:1, marginBottom:16 }}>
-          <StatBox label="RUSH YDS MAE"  value="27 yds" color="var(--silver)" />
-          <StatBox label="CARRIES MAE"   value="4.4"    color="var(--green)" />
+          <StatBox label="RUSH YDS MAE"  value="27 yds"  color="var(--silver)" />
+          <StatBox label="CARRIES MAE"   value="4.4"     color="var(--green)" />
           <StatBox label="BET THRESHOLD" value="±15 yds" color="var(--gold)" />
         </div>
         <div style={{ border:'1px solid var(--border)', marginBottom:16 }}>
@@ -859,8 +942,8 @@ function StrategyTab() {
       <Section title="WR PROPS" super="Receiving yards model" accent="var(--silver)">
         <Callout>Target share is stable week to week. The model captures scheme tendencies well.</Callout>
         <div style={{ display:'flex', gap:1, marginBottom:16 }}>
-          <StatBox label="REC YDS MAE"    value="27 yds" color="var(--silver)" />
-          <StatBox label="RECEPTIONS MAE" value="1.66"   color="var(--green)" />
+          <StatBox label="REC YDS MAE"    value="27 yds"  color="var(--silver)" />
+          <StatBox label="RECEPTIONS MAE" value="1.66"    color="var(--green)" />
           <StatBox label="BET THRESHOLD"  value="±15 yds" color="var(--gold)" />
         </div>
         <div style={{ border:'1px solid var(--border)', marginBottom:16 }}>
@@ -890,13 +973,13 @@ function StrategyTab() {
 
 // ── App shell ─────────────────────────────────────────────────────────────────
 export default function App() {
-  const [tab, setTab] = useState("winners")
+  const [tab, setTab] = useState('winners')
   const tabs = [
-    { id:"winners",  label:"PICKS"    },
-    { id:"props",    label:"PROPS"    },
-    { id:"elo",      label:"RANKINGS" },
-    { id:"about",    label:"STATS"    },
-    { id:"strategy", label:"STRATEGY" },
+    { id:'winners',  label:'PICKS'    },
+    { id:'props',    label:'PROPS'    },
+    { id:'elo',      label:'RANKINGS' },
+    { id:'about',    label:'STATS'    },
+    { id:'strategy', label:'STRATEGY' },
   ]
 
   return (
