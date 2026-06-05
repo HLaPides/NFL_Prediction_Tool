@@ -1,3 +1,35 @@
+"""
+wr_props.py — XGBoost prop predictions for WR receiving stats.
+
+Predicts four stats per WR per game: receiving_yards, receiving_tds,
+receptions, targets. The top 3 WRs per team (by recent target volume)
+are predicted — unlike RBs where only the lead back is used. Used by
+predictor.py to populate the wr_prop_predictions table each week.
+
+Architecture:
+    XGBoost regressor, one model per stat target. Walk-forward validated.
+    Uses WR-specific defense rating (roll_adj_def_wr_epa) which measures
+    EPA allowed specifically on WR targets — more precise than overall
+    pass defense, which is diluted by TE and RB routes.
+
+Features (18):
+    Rolling receiving: receiving_yards, receiving_tds, receptions, targets,
+    target_share, air_yards_share, ypr, catch_rate, receiving_epa, racr, wopr
+    Opponent defense: wr_def_rank, def_games_played
+    Game context: total_line, spread_line, implied_team_total, is_home, rest
+
+Note on RACR and WOPR:
+    RACR (Receiver Air Conversion Ratio) and WOPR (Weighted Opportunity Rating)
+    are advanced target quality metrics. They're in FEATURE_COLS because they
+    improve backtest accuracy. They're available in player_stats_current so
+    no default substitution needed.
+
+Usage:
+    python3.11 engine/props/wr_props.py   # backtest + retrain all targets
+
+Writes to disk:
+    engine/props/props_wr_{target}.pkl for each target in STAT_TARGETS
+"""
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[2]))
@@ -11,7 +43,7 @@ from engine.defense import get_current_defense_ratings
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 MIN_SEASON        = 1999
-MIN_TARGETS       = 3
+MIN_TARGETS       = 3         # Filter out gadget plays / single-target appearances
 ROLL_WINDOW       = 4
 MIN_TRAIN_SEASONS = 4
 STAT_TARGETS      = ["receiving_yards", "receiving_tds", "receptions", "targets"]
@@ -26,6 +58,27 @@ BEST_PARAMS = {
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 def load_wr_data() -> pd.DataFrame:
+    """
+    Load and assemble the historical WR training dataset.
+
+    Joins player_stats (WR rows with ≥ MIN_TARGETS targets) to schedules,
+    game odds, and opponent WR-specific defense ratings. Computes 4-game
+    rolling averages using shift(1) to prevent leakage.
+
+    Derived features:
+        roll_ypr:        rolling receiving_yards / receptions (yards per reception)
+        roll_catch_rate: rolling receptions / targets
+        implied_team_total: derived from total_line and spread_line
+
+    Opponent defense features:
+        roll_adj_def_wr_epa — EPA allowed on WR-targeted pass plays,
+        opponent-adjusted. More precise than overall pass defense rank
+        because it isolates coverage quality against boundary receivers.
+
+    Returns:
+        pd.DataFrame: One row per WR game appearance with all features
+                      and target columns populated.
+    """
     with get_connection() as conn:
         wr = pd.read_sql("""
             SELECT
@@ -54,11 +107,6 @@ def load_wr_data() -> pd.DataFrame:
             WHERE s.game_type = 'REG'
         """, conn)
 
-        # WR props use WR-specific defense ratings:
-        #   roll_adj_def_wr_epa — EPA allowed specifically on WR targets,
-        #   opponent-adjusted. This is far more precise than overall pass
-        #   defense because a team might be strong against TEs but weak
-        #   against boundary WRs. The model can now detect that signal.
         def_ratings = pd.read_sql("""
             SELECT team, season, week,
                    roll_adj_def_pass_epa,
@@ -148,6 +196,21 @@ FEATURE_COLS = [
 def walk_forward_backtest(df: pd.DataFrame,
                           target: str = "receiving_yards",
                           params: dict = None) -> pd.DataFrame:
+    """
+    Validate model accuracy using strict walk-forward cross-validation.
+
+    Trains on seasons 1..N-1, tests on season N. Requires MIN_TRAIN_SEASONS
+    before the first test season. Rows with null features or target are dropped.
+
+    Args:
+        df: Output of load_wr_data().
+        target: Stat column to predict (must be in STAT_TARGETS).
+        params: XGBoost params dict. Defaults to BEST_PARAMS[target].
+
+    Returns:
+        pd.DataFrame: Predictions with player_id, player_name, season, week,
+                      team, opponent_team, target, predicted, error columns.
+    """
     if params is None:
         params = BEST_PARAMS.get(target, BEST_PARAMS["receiving_yards"])
     seasons = sorted(df["season"].unique())
@@ -177,6 +240,17 @@ def walk_forward_backtest(df: pd.DataFrame,
 def train_final_model(df: pd.DataFrame,
                       target: str = "receiving_yards",
                       params: dict = None) -> XGBRegressor:
+    """
+    Train on all available data and save model to disk.
+
+    Args:
+        df: Output of load_wr_data().
+        target: Stat to predict.
+        params: XGBoost params. Defaults to BEST_PARAMS[target].
+
+    Returns:
+        XGBRegressor: Fitted model (also saved to props_wr_{target}.pkl).
+    """
     if params is None:
         params = BEST_PARAMS.get(target, BEST_PARAMS["receiving_yards"])
     clean = df.dropna(subset=FEATURE_COLS + [target])
@@ -191,6 +265,7 @@ def train_final_model(df: pd.DataFrame,
 
 
 def load_props_model(target: str = "receiving_yards") -> XGBRegressor:
+    """Load a trained WR prop model from disk."""
     model_dir = Path(__file__).resolve().parent
     with open(model_dir / f"props_wr_{target}.pkl", "rb") as f:
         return pickle.load(f)
@@ -198,6 +273,22 @@ def load_props_model(target: str = "receiving_yards") -> XGBRegressor:
 
 # ── Predict current week ──────────────────────────────────────────────────────
 def predict_current_week(models: dict) -> pd.DataFrame:
+    """
+    Generate WR prop predictions for this week's upcoming games.
+
+    Selects the top 3 WRs per team by recent target volume (last ROLL_WINDOW
+    games in player_stats_current). Unlike RBs where only the lead back is
+    predicted, WR passing games are distributed enough that predicting 3
+    receivers per team is meaningful for prop betting.
+
+    Args:
+        models: Dict of { target_name: fitted XGBRegressor }.
+                Load via { t: load_props_model(t) for t in STAT_TARGETS }.
+
+    Returns:
+        pd.DataFrame: Up to 3 rows per team matchup with pred_{stat} columns.
+                      Empty DataFrame if no upcoming games or player data found.
+    """
     with get_connection() as conn:
         wr_cur = pd.read_sql("""
             SELECT player_id, player_name, season, week, team,
@@ -257,6 +348,7 @@ def predict_current_week(models: dict) -> pd.DataFrame:
             "roll_wopr":                 last_n["wopr"].mean() if "wopr" in last_n else 0,
         })
 
+    # Top 3 per team by target volume
     for team in team_wrs:
         team_wrs[team] = sorted(team_wrs[team], key=lambda x: x["total_targets"], reverse=True)[:3]
 
@@ -307,6 +399,7 @@ def predict_current_week(models: dict) -> pd.DataFrame:
         pred_df[f"pred_{stat}"] = model.predict(pred_df[FEATURE_COLS]).round(1)
 
     return pred_df
+
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":

@@ -1,3 +1,30 @@
+"""
+rb_props.py — XGBoost prop predictions for RB rushing and receiving stats.
+
+Predicts five stats per RB per game: rushing_yards, rushing_tds, carries,
+receptions, receiving_yards. Only the lead back per team (most carries over
+the last ROLL_WINDOW games) is predicted. Used by predictor.py to populate
+the rb_prop_predictions table each week.
+
+Architecture:
+    XGBoost regressor, one model per stat target. Walk-forward validated.
+    Separate defense features for rushing (roll_adj_def_rush_epa) and
+    receiving (roll_adj_def_rb_epa) — because a strong run defense doesn't
+    necessarily mean strong coverage against RBs out of the backfield.
+
+Features (20):
+    Rolling rushing: rushing_yards, rushing_tds, carries, ypc, rushing_epa
+    Rolling receiving: receptions, targets, receiving_yards, rec_rate, receiving_epa
+    Opponent defense: roll_adj_def_rush_epa, roll_adj_def_rb_epa, rush_def_rank,
+                      rb_def_rank, def_games_played
+    Game context: total_line, spread_line, implied_team_total, is_home, rest
+
+Usage:
+    python3.11 engine/props/rb_props.py   # backtest + retrain all targets
+
+Writes to disk:
+    engine/props/props_rb_{target}.pkl for each target in STAT_TARGETS
+"""
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[2]))
@@ -11,7 +38,7 @@ from engine.defense import get_current_defense_ratings
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 MIN_SEASON        = 1999
-MIN_CARRIES       = 5
+MIN_CARRIES       = 5         # Filter out change-of-pace / emergency appearances
 ROLL_WINDOW       = 4
 MIN_TRAIN_SEASONS = 4
 STAT_TARGETS      = ["rushing_yards", "rushing_tds", "carries",
@@ -28,6 +55,26 @@ BEST_PARAMS = {
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 def load_rb_data() -> pd.DataFrame:
+    """
+    Load and assemble the historical RB training dataset.
+
+    Joins player_stats (RB rows with ≥ MIN_CARRIES carries) to schedules,
+    game odds, and opponent defense ratings. Computes 4-game rolling averages
+    using shift(1) to prevent leakage.
+
+    Derived features:
+        roll_ypc:      rolling yards per carry
+        roll_rec_rate: rolling receptions / targets (catch rate)
+        implied_team_total: derived from total_line and spread_line
+
+    Opponent defense features:
+        roll_adj_def_rush_epa — for rushing stat targets
+        roll_adj_def_rb_epa   — for receiving stat targets (RB targets allowed)
+
+    Returns:
+        pd.DataFrame: One row per RB game appearance with all features
+                      and target columns populated.
+    """
     with get_connection() as conn:
         rb = pd.read_sql("""
             SELECT
@@ -56,10 +103,6 @@ def load_rb_data() -> pd.DataFrame:
             WHERE s.game_type = 'REG'
         """, conn)
 
-        # Opponent-adjusted rush AND pass defense ratings
-        # For RBs we need both:
-        #   roll_adj_def_rush_epa — for rushing yards/carries/TDs
-        #   roll_adj_def_rb_epa   — for receiving yards/receptions (RB targets)
         def_ratings = pd.read_sql("""
             SELECT team, season, week,
                    roll_adj_def_rush_epa,
@@ -146,6 +189,21 @@ FEATURE_COLS = [
 def walk_forward_backtest(df: pd.DataFrame,
                           target: str = "rushing_yards",
                           params: dict = None) -> pd.DataFrame:
+    """
+    Validate model accuracy using strict walk-forward cross-validation.
+
+    Trains on seasons 1..N-1, tests on season N. Requires MIN_TRAIN_SEASONS
+    before the first test season. Rows with null features or target are dropped.
+
+    Args:
+        df: Output of load_rb_data().
+        target: Stat column to predict (must be in STAT_TARGETS).
+        params: XGBoost params dict. Defaults to BEST_PARAMS[target].
+
+    Returns:
+        pd.DataFrame: Predictions with player_id, player_name, season, week,
+                      team, opponent_team, target, predicted, error columns.
+    """
     if params is None:
         params = BEST_PARAMS.get(target, BEST_PARAMS["rushing_yards"])
     seasons = sorted(df["season"].unique())
@@ -175,6 +233,17 @@ def walk_forward_backtest(df: pd.DataFrame,
 def train_final_model(df: pd.DataFrame,
                       target: str = "rushing_yards",
                       params: dict = None) -> XGBRegressor:
+    """
+    Train on all available data and save model to disk.
+
+    Args:
+        df: Output of load_rb_data().
+        target: Stat to predict.
+        params: XGBoost params. Defaults to BEST_PARAMS[target].
+
+    Returns:
+        XGBRegressor: Fitted model (also saved to props_rb_{target}.pkl).
+    """
     if params is None:
         params = BEST_PARAMS.get(target, BEST_PARAMS["rushing_yards"])
     clean = df.dropna(subset=FEATURE_COLS + [target])
@@ -189,6 +258,7 @@ def train_final_model(df: pd.DataFrame,
 
 
 def load_props_model(target: str = "rushing_yards") -> XGBRegressor:
+    """Load a trained RB prop model from disk."""
     model_dir = Path(__file__).resolve().parent
     with open(model_dir / f"props_rb_{target}.pkl", "rb") as f:
         return pickle.load(f)
@@ -196,6 +266,22 @@ def load_props_model(target: str = "rushing_yards") -> XGBRegressor:
 
 # ── Predict current week ──────────────────────────────────────────────────────
 def predict_current_week(models: dict) -> pd.DataFrame:
+    """
+    Generate RB prop predictions for this week's upcoming games.
+
+    Identifies the lead back per team as the RB with the most carries over
+    the last ROLL_WINDOW games in player_stats_current. Only one RB per team
+    is predicted — the clear workhorse. If usage is split, the model will
+    still pick one; prop betting on committee backfields should be avoided.
+
+    Args:
+        models: Dict of { target_name: fitted XGBRegressor }.
+                Load via { t: load_props_model(t) for t in STAT_TARGETS }.
+
+    Returns:
+        pd.DataFrame: One row per RB/team matchup with pred_{stat} columns.
+                      Empty DataFrame if no upcoming games or player data found.
+    """
     with get_connection() as conn:
         rb_cur = pd.read_sql("""
             SELECT player_id, player_name, season, week, team,
@@ -299,10 +385,9 @@ def predict_current_week(models: dict) -> pd.DataFrame:
 
     for stat, model in models.items():
         pred_df[f"pred_{stat}"] = model.predict(pred_df[FEATURE_COLS]).round(1)
-        
-    print(f"  Columns: {pred_df.columns.tolist()}")
-    print(f"  Sample player_name: {pred_df['player_name'].head(3).tolist()}")
+
     return pred_df
+
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":

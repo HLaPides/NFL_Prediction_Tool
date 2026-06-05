@@ -1,3 +1,36 @@
+"""
+qb_props.py — XGBoost prop predictions for QB passing stats.
+
+Predicts five stats per QB per game: passing_yards, passing_tds, attempts,
+completions, passing_interceptions. Used by predictor.py to populate the
+qb_prop_predictions table each week.
+
+Architecture:
+    XGBoost regressor trained on 4-game rolling player stats and opponent
+    defense quality. Walk-forward validated (train on seasons 1..N-1, test N).
+
+Features (16):
+    Player rolling stats: passing_yards, tds, attempts, comp_rate, cpoe,
+    air_yards_per_att, passing_epa, qb_rush_yards
+    Game context: total_line, spread_line, implied_team_total, is_dome,
+    high_wind, temp, is_home, rest
+
+Opponent defense:
+    roll_adj_def_pass_epa — opponent-adjusted pass EPA allowed, from defense.py.
+    Loaded from defense_ratings table but NOT in FEATURE_COLS (available in
+    prediction rows for future feature expansion).
+
+Note on CPOE and air_yards_per_att:
+    These are set to defaults (0.0 and 7.5) in predict_current_week() because
+    player_stats_current doesn't include them. They're kept in the model because
+    they improve backtest accuracy on historical data.
+
+Usage:
+    python3.11 engine/props/qb_props.py   # backtest + retrain all targets
+
+Writes to disk:
+    engine/props/props_qb_{target}.pkl for each target in STAT_TARGETS
+"""
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[2]))
@@ -8,10 +41,11 @@ import numpy as np
 from xgboost import XGBRegressor
 from data.sql_helpers import get_connection, save
 from engine.defense import get_current_defense_ratings
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 MIN_SEASON        = 1999
-MIN_ATTEMPTS      = 10
-ROLL_WINDOW       = 4
+MIN_ATTEMPTS      = 10        # Filter out game manager / mop-up appearances
+ROLL_WINDOW       = 4         # 4-game rolling window — same as main model
 MIN_TRAIN_SEASONS = 4
 STAT_TARGETS      = ["passing_yards", "passing_tds", "attempts",
                      "completions", "passing_interceptions"]
@@ -27,6 +61,24 @@ BEST_PARAMS = {
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 def load_qb_data() -> pd.DataFrame:
+    """
+    Load and assemble the historical QB training dataset.
+
+    Joins player_stats (QB rows with ≥ MIN_ATTEMPTS attempts) to schedules,
+    game conditions, game odds, and opponent defense ratings. Computes
+    4-game rolling averages for all stat columns using shift(1) to ensure
+    no leakage — rolling stats going into game N use only games 1..N-1.
+
+    Derived features:
+        roll_comp_rate:         rolling completions / attempts
+        roll_air_yards_per_att: rolling passing_air_yards / attempts
+        roll_cpoe:              rolling completion percentage over expected
+        implied_team_total:     derived from total_line and spread_line
+
+    Returns:
+        pd.DataFrame: One row per QB game appearance with all features
+                      and target columns populated.
+    """
     with get_connection() as conn:
         qb = pd.read_sql("""
             SELECT
@@ -60,8 +112,6 @@ def load_qb_data() -> pd.DataFrame:
             WHERE s.game_type = 'REG'
         """, conn)
 
-        # Opponent-adjusted defense ratings built by defense_ratings.py
-        # These replace raw yards/TDs allowed — see defense_ratings.py for methodology
         def_ratings = pd.read_sql("""
             SELECT team, season, week,
                    roll_adj_def_pass_epa,
@@ -77,7 +127,6 @@ def load_qb_data() -> pd.DataFrame:
     qb["is_home"] = (qb["team"] == qb["home_team"]).astype(int)
     qb["rest"]    = np.where(qb["is_home"] == 1, qb["home_rest"], qb["away_rest"])
 
-    # Join opponent defense — defteam is the QB's opponent_team
     qb = qb.merge(
         def_ratings.rename(columns={"team": "opponent_team"}),
         on=["opponent_team", "season", "week"], how="left"
@@ -88,7 +137,6 @@ def load_qb_data() -> pd.DataFrame:
         qb[col] = qb[col].fillna(16)
     qb["def_games_played"] = qb["def_games_played"].fillna(0)
 
-    # Rolling QB stats
     qb = qb.sort_values(["player_id", "season", "week"]).reset_index(drop=True)
     for stat in ["passing_yards", "passing_tds", "attempts", "completions",
                  "passing_interceptions", "passing_epa", "qb_rush_yards"]:
@@ -152,6 +200,21 @@ FEATURE_COLS = [
 def walk_forward_backtest(df: pd.DataFrame,
                           target: str = "passing_yards",
                           params: dict = None) -> pd.DataFrame:
+    """
+    Validate model accuracy using strict walk-forward cross-validation.
+
+    Trains on seasons 1..N-1, tests on season N. Requires MIN_TRAIN_SEASONS
+    before the first test season. Rows with null features or target are dropped.
+
+    Args:
+        df: Output of load_qb_data().
+        target: Stat column to predict (must be in STAT_TARGETS).
+        params: XGBoost params dict. Defaults to BEST_PARAMS[target].
+
+    Returns:
+        pd.DataFrame: Predictions with player_id, player_name, season, week,
+                      team, opponent_team, target, predicted, error columns.
+    """
     if params is None:
         params = BEST_PARAMS.get(target, BEST_PARAMS["passing_yards"])
     seasons = sorted(df["season"].unique())
@@ -181,6 +244,17 @@ def walk_forward_backtest(df: pd.DataFrame,
 def train_final_model(df: pd.DataFrame,
                       target: str = "passing_yards",
                       params: dict = None) -> XGBRegressor:
+    """
+    Train on all available data and save model to disk.
+
+    Args:
+        df: Output of load_qb_data().
+        target: Stat to predict.
+        params: XGBoost params. Defaults to BEST_PARAMS[target].
+
+    Returns:
+        XGBRegressor: Fitted model (also saved to props_qb_{target}.pkl).
+    """
     if params is None:
         params = BEST_PARAMS.get(target, BEST_PARAMS["passing_yards"])
     clean = df.dropna(subset=FEATURE_COLS + [target])
@@ -195,6 +269,7 @@ def train_final_model(df: pd.DataFrame,
 
 
 def load_props_model(target: str = "passing_yards") -> XGBRegressor:
+    """Load a trained QB prop model from disk."""
     model_dir = Path(__file__).resolve().parent
     with open(model_dir / f"props_qb_{target}.pkl", "rb") as f:
         return pickle.load(f)
@@ -202,6 +277,24 @@ def load_props_model(target: str = "passing_yards") -> XGBRegressor:
 
 # ── Predict current week ──────────────────────────────────────────────────────
 def predict_current_week(models: dict) -> pd.DataFrame:
+    """
+    Generate QB prop predictions for this week's upcoming games.
+
+    Identifies the starting QB per team as the player with the most recent
+    appearance in player_stats_current. Builds a feature vector from their
+    last ROLL_WINDOW games and the opponent's current defensive ratings.
+
+    Note: passing_cpoe and air_yards_per_att are not available in
+    player_stats_current, so they default to 0.0 and 7.5 respectively.
+
+    Args:
+        models: Dict of { target_name: fitted XGBRegressor }.
+                Load via { t: load_props_model(t) for t in STAT_TARGETS }.
+
+    Returns:
+        pd.DataFrame: One row per QB matchup with pred_{stat} columns.
+                      Empty DataFrame if no upcoming games or player data found.
+    """
     with get_connection() as conn:
         qb_cur = pd.read_sql("""
             SELECT player_id, player_name, season, week, team,
@@ -235,7 +328,7 @@ def predict_current_week(models: dict) -> pd.DataFrame:
         print("No current week data available.")
         return pd.DataFrame()
 
-    def_map = get_current_defense_ratings().set_index("team").to_dict("index")
+    def_map   = get_current_defense_ratings().set_index("team").to_dict("index")
     next_week = upcoming["week"].min()
     upcoming  = upcoming[upcoming["week"] == next_week]
 
@@ -252,8 +345,8 @@ def predict_current_week(models: dict) -> pd.DataFrame:
             "roll_comp_rate":         last_n["completions"].sum() / max(last_n["attempts"].sum(), 1),
             "roll_passing_epa":       last_n["passing_epa"].mean(),
             "roll_qb_rush_yards":     last_n["qb_rush_yards"].mean(),
-            "roll_cpoe":              0.0,
-            "roll_air_yards_per_att": 7.5,
+            "roll_cpoe":              0.0,   # not in player_stats_current
+            "roll_air_yards_per_att": 7.5,   # not in player_stats_current
         }
 
     rows = []
@@ -263,6 +356,7 @@ def predict_current_week(models: dict) -> pd.DataFrame:
             team_qbs = {pid: s for pid, s in rolling_stats.items() if s["team"] == team}
             if not team_qbs:
                 continue
+            # Most recent appearance = most likely starter
             starter_id = max(team_qbs.keys(),
                              key=lambda p: qb_cur[qb_cur["player_id"] == p]["week"].max()
                              if not qb_cur[qb_cur["player_id"] == p].empty else 0)
@@ -329,6 +423,7 @@ if __name__ == "__main__":
     print(f"  Total predictions: {len(bt)}")
     print("\nPer-season MAE:")
     print(bt.groupby("season")["error"].mean().round(2).to_string())
+
     print("\nTraining final models...")
     models = {}
     for target in STAT_TARGETS:
