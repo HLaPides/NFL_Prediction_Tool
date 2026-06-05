@@ -1,3 +1,39 @@
+"""
+predictor.py — Generate weekly game predictions and player props.
+
+Called at the end of weekly_update.py (step 9) after all data has already
+been fetched, merged, and the model retrained. Do NOT call this directly
+as a replacement for weekly_update.py — predictions against stale data
+are meaningless.
+
+Core flow:
+    run_predictions()
+        └── run_game_predictions()   → weekly_predictions table
+        └── run_props_predictions()  → qb/rb/wr_prop_predictions tables
+
+Game prediction logic:
+    - Loads the trained XGBoost model from trained_base_model.pkl
+    - Builds a feature vector for each upcoming game from current DB state
+      (ELO, rolling stats, player features, injury scores, clutch scores,
+       game conditions, defense ratings, Vegas spread)
+    - Predicts ATS margin (result - vegas_spread), converts back to spread
+    - Computes bootstrap confidence (std across 25 bootstrap models)
+    - During playoff weeks (19-22), silently switches to the logistic
+      playoff model for win probability and pick direction; spread model
+      still runs for reference
+
+Injury scoring:
+    Position weights × status severity (Out=1.0, Doubtful=0.75,
+    Questionable=0.25) summed per team. QB out flagged separately.
+
+Clutch scoring:
+    Win rate in close games (≤7 pts) over the last 8 games.
+    Falls back to 0.5 (neutral) if fewer than 3 close games in window.
+
+Writes to DB tables:
+    weekly_predictions, playoff_predictions,
+    qb_prop_predictions, rb_prop_predictions, wr_prop_predictions
+"""
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -53,6 +89,10 @@ QB_OUT_STATUSES = {"Out", "Doubtful", "IR", "PUP"}
 
 # ── Playoff detection ─────────────────────────────────────────────────────────
 def is_playoff_week(upcoming: pd.DataFrame) -> bool:
+    """
+    Return True if any upcoming game is a playoff game.
+    Checks week numbers first (19-22), then falls back to game_type in DB.
+    """
     if upcoming.empty:
         return False
     if upcoming["week"].isin(PLAYOFF_WEEKS).any():
@@ -73,6 +113,7 @@ def is_playoff_week(upcoming: pd.DataFrame) -> bool:
 
 # ── Playoff predictions table ─────────────────────────────────────────────────
 def ensure_playoff_table():
+    """Create playoff_predictions table if it doesn't exist."""
     with get_connection() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS playoff_predictions (
@@ -92,6 +133,7 @@ def ensure_playoff_table():
 
 
 def save_playoff_prediction(game_id, season, week, home_team, away_team, pred, features):
+    """Upsert a playoff prediction row into playoff_predictions."""
     ensure_playoff_table()
     pick = home_team if pred["playoff_pick"] == "home" else away_team
     with get_connection() as conn:
@@ -113,6 +155,11 @@ def save_playoff_prediction(game_id, season, week, home_team, away_team, pred, f
 
 # ── Clutch scores ─────────────────────────────────────────────────────────────
 def build_clutch_scores() -> dict:
+    """
+    Compute each team's win rate in close games (≤7 pts) over the last
+    CLUTCH_ROLL games. Returns { team: clutch_rate } where 0.5 is neutral.
+    Falls back to 0.5 if fewer than 3 close games in window.
+    """
     try:
         with get_connection() as conn:
             games = pd.read_sql("""
@@ -154,6 +201,16 @@ def build_clutch_scores() -> dict:
 
 # ── Injury scores ─────────────────────────────────────────────────────────────
 def build_injury_scores() -> dict:
+    """
+    Compute a weighted injury severity score for each team from injuries_current.
+
+    Each player's score = POSITION_WEIGHTS[pos] × STATUS_SEVERITY[status].
+    Summed per team. QB out flagged separately as a binary flag.
+
+    Returns:
+        dict: { team: {"injury_score": float, "qb_out": int} }
+              Only teams with injuries included. Missing teams → score of 0.
+    """
     try:
         with get_connection() as conn:
             inj = pd.read_sql("SELECT * FROM injuries_current", conn)
@@ -193,6 +250,7 @@ def build_injury_scores() -> dict:
 
 # ── Load upcoming games ───────────────────────────────────────────────────────
 def load_upcoming_games() -> pd.DataFrame:
+    """Load all unplayed games from schedules_current with Vegas spread."""
     with get_connection() as conn:
         return pd.read_sql("""
             SELECT s.game_id, s.season, s.week,
@@ -210,6 +268,25 @@ def load_upcoming_games() -> pd.DataFrame:
 def build_game_features(game: pd.Series,
                         inj_scores: dict = None,
                         clutch_scores: dict = None) -> dict:
+    """
+    Build a FEATURE_COLS-aligned feature dict for a single upcoming game.
+
+    Pulls from current DB state:
+        - ELO ratings (most recent from elo_history)
+        - Rolling team stats (most recent from team_rolling_stats)
+        - Player features (most recent from player_features)
+        - Game conditions (roof, wind from game_conditions)
+        - Defense ratings (most recent from defense_ratings)
+        - Injury and clutch scores (pre-computed, passed in)
+
+    Args:
+        game: Row from load_upcoming_games() DataFrame.
+        inj_scores: Output of build_injury_scores().
+        clutch_scores: Output of build_clutch_scores().
+
+    Returns:
+        dict: Feature name → value, keys matching FEATURE_COLS exactly.
+    """
     inj_scores    = inj_scores    or {}
     clutch_scores = clutch_scores or {}
 
@@ -264,14 +341,10 @@ def build_game_features(game: pd.Series,
         try:   return float(row[col]) if row is not None and col in row else default
         except: return default
 
-    hr = home_roll if isinstance(home_roll, pd.Series) else {}
-    ar = away_roll if isinstance(away_roll, pd.Series) else {}
+    hr  = home_roll if isinstance(home_roll, pd.Series) else {}
+    ar  = away_roll if isinstance(away_roll, pd.Series) else {}
     hdr = def_ratings[def_ratings["team"] == game["home_team"]]
     adr = def_ratings[def_ratings["team"] == game["away_team"]]
-
-    def get_def(row, col, default=0.0):
-        try:   return float(row.iloc[0][col]) if not row.empty and col in row.columns else default
-        except: return default
 
     is_dome   = 1 if not cond.empty and cond.iloc[0]["roof"] in ("dome","closed") else 0
     high_wind = 1 if not cond.empty and float(cond.iloc[0]["wind"] or 0) > 15 else 0
@@ -317,6 +390,7 @@ def build_game_features(game: pd.Series,
 
 # ── Win probability from spread ───────────────────────────────────────────────
 def spread_to_win_prob(spread: float) -> float:
+    """Convert a point spread to a win probability using ELO-style scaling."""
     import math
     adj = spread * WIN_PROB_SCALE / HOME_ADVANTAGE
     return round(1.0 / (1 + math.pow(10, -adj / 400)), 3)
@@ -324,6 +398,20 @@ def spread_to_win_prob(spread: float) -> float:
 
 # ── Run game predictions ──────────────────────────────────────────────────────
 def run_game_predictions() -> pd.DataFrame:
+    """
+    Generate spread predictions for all upcoming games and save to weekly_predictions.
+
+    Process per game:
+        1. Build feature vector from current DB state
+        2. Predict ATS margin via trained XGBoost, convert back to spread
+        3. Score confidence via 25 pre-fit bootstrap models (std of predictions)
+        4. During playoff weeks: override win prob and pick with playoff model
+        5. Save playoff picks to playoff_predictions table
+
+    Returns:
+        pd.DataFrame: One row per upcoming game with all prediction columns.
+                      Empty DataFrame if no upcoming games.
+    """
     base, _       = load_trained_model()
     upcoming      = load_upcoming_games()
     inj_scores    = build_injury_scores()
@@ -353,9 +441,7 @@ def run_game_predictions() -> pd.DataFrame:
     else:
         print("  Regular season week.")
 
-    # ── Bootstrap confidence for live predictions ────────────────────────────
-    # Fit N_BOOTS models once on bootstrap samples, then score all games.
-    # Much faster than fitting per game — O(N_BOOTS) fits not O(N_BOOTS * N_games).
+    # Fit bootstrap models once upfront — O(N_BOOTS) fits not O(N_BOOTS * N_games)
     print("  Computing confidence scores (bootstrap)...")
     boot_models = []
     try:
@@ -388,13 +474,10 @@ def run_game_predictions() -> pd.DataFrame:
             features     = build_game_features(game, inj_scores, clutch_scores)
             X            = pd.DataFrame([features])[FEATURE_COLS].fillna(0)
 
-            # ATS margin prediction + vegas = implied spread
             vegas_spread = features["vegas_spread"]
             ats_pred     = float(base.predict(X)[0])
             model_spread = round(ats_pred + vegas_spread, 1)
-
-            # Bootstrap confidence
-            confidence = get_confidence(X)
+            confidence   = get_confidence(X)
 
             spread_gap       = round(model_spread - vegas_spread, 1) if vegas_spread else None
             home_win_prob    = spread_to_win_prob(model_spread)
@@ -418,7 +501,7 @@ def run_game_predictions() -> pd.DataFrame:
                     print(f"  {game['home_team']:4s} vs {game['away_team']:4s}  "
                           f"playoff model failed ({e}), using main")
             else:
-                edge_flag = " ★" if spread_gap and abs(spread_gap) >= 3.0 else ""
+                edge_flag  = " ★" if spread_gap and abs(spread_gap) >= 3.0 else ""
                 conf_label = f"  conf:{confidence:.2f}" if confidence is not None else ""
                 print(f"  {game['home_team']:4s} vs {game['away_team']:4s}  "
                       f"model: {model_spread:+.1f}  vegas: {str(vegas_spread or '?'):>5}  "
@@ -455,6 +538,11 @@ def run_game_predictions() -> pd.DataFrame:
 
 # ── Props ─────────────────────────────────────────────────────────────────────
 def run_props_predictions() -> None:
+    """
+    Generate QB, RB, and WR prop predictions for upcoming games.
+    Each position loads its trained models and saves to the corresponding table.
+    Failures are caught per position so one bad model doesn't block the others.
+    """
     try:
         qb_models = {t: load_qb_model(t) for t in ["passing_yards","passing_tds","attempts","completions","passing_interceptions"]}
         qb_preds  = predict_qb(qb_models)
@@ -483,94 +571,22 @@ def run_props_predictions() -> None:
         print(f"  WR props failed: {e}")
 
 
-# ── Main pipeline ─────────────────────────────────────────────────────────────
+# ── Main entry point ──────────────────────────────────────────────────────────
 def run_predictions() -> pd.DataFrame:
-    import nflreadpy as nfl
-    from nflreadpy.utils_date import get_current_season
-    from engine.elo_analyzer import elo_analyzer
-    from engine.defense import build_defense_ratings
-    from scripts.seed import build_rolling_stats, build_player_features
-    from data.injury_getter import fetch_injuries
-    from data.depth_chart_getter import get_all_depth_charts
+    """
+    Run game picks and player props for this week's upcoming games.
 
-    season = get_current_season()
-    print(f"\n[1/8] Fetching {season} nflverse data...")
-    schedules    = nfl.load_schedules([season]).to_pandas()
-    player_stats = nfl.load_player_stats([season]).to_pandas()
-    player_stats = player_stats[player_stats["season_type"] == "REG"]
-    player_stats = player_stats[player_stats["position"].isin(SKILL_POSITIONS)]
-    team_stats   = nfl.load_team_stats(seasons=[season], summary_level="week").to_pandas()
-    rosters      = nfl.load_rosters([season]).to_pandas()
-    print(f"  {len(schedules)} games, {len(player_stats)} player rows")
+    Called by weekly_update.py after all data has been fetched, merged,
+    and the model retrained. Does NOT re-fetch data or retrain — that is
+    weekly_update.py's job (steps 1-8). This is step 9.
 
-    print("\n[2/8] Fetching injuries and depth charts...")
-    try:
-        injuries = fetch_injuries()
-        print(f"  {len(injuries)} injury entries")
-    except Exception as e:
-        print(f"  Injury fetch failed: {e}")
-        injuries = pd.DataFrame()
-
-    try:
-        depth_charts = get_all_depth_charts()
-        if not depth_charts.empty:
-            depth_charts["fetched_at"] = pd.Timestamp.now().isoformat()
-        print(f"  {len(depth_charts)} depth chart entries")
-    except Exception as e:
-        print(f"  Depth chart fetch failed: {e}")
-        depth_charts = pd.DataFrame()
-
-    print("\n[3/8] Saving current tables...")
-    with get_connection() as conn:
-        schedules.to_sql("schedules_current",       conn, if_exists="replace", index=False)
-        player_stats.to_sql("player_stats_current", conn, if_exists="replace", index=False)
-        team_stats.to_sql("team_stats_current",     conn, if_exists="replace", index=False)
-        rosters.to_sql("rosters_current",           conn, if_exists="replace", index=False)
-        if not injuries.empty:
-            injuries.to_sql("injuries_current",     conn, if_exists="replace", index=False)
-        if not depth_charts.empty:
-            depth_charts.to_sql("depth_charts_current", conn, if_exists="replace", index=False)
-    print("  Done")
-
-    print("\n[4/8] Merging completed games...")
-    n = merge_season_into_historical(schedules)
-    print(f"  {n} new games merged")
-
-    print("\n[5/8] Rebuilding ELO + features...")
-    elo = elo_analyzer()
-    elo.build_history()
-
-    with get_connection() as conn:
-        existing_rolling = pd.read_sql("SELECT DISTINCT game_id FROM team_rolling_stats", conn)["game_id"].tolist()
-        existing_player  = pd.read_sql("SELECT DISTINCT game_id FROM player_features",    conn)["game_id"].tolist()
-
-    if [g for g in schedules["game_id"] if g not in existing_rolling]:
-        save(build_rolling_stats(), "team_rolling_stats")
-        print("  Rolling stats rebuilt")
-    else:
-        print("  Rolling stats up to date")
-
-    if [g for g in schedules["game_id"] if g not in existing_player]:
-        save(build_player_features(), "player_features")
-        print("  Player features rebuilt")
-    else:
-        print("  Player features up to date")
-
-    print("\n[6/8] Retraining spread model...")
-    train_final_model(load_training_data())
-
-    print("\n[7/8] Rebuilding defense ratings...")
-    from engine.defense import build_defense_ratings
-    def_ratings = build_defense_ratings(seasons=[season])
-    save(def_ratings, "defense_ratings")
-    print(f"  {len(def_ratings):,} rows")
-
-    print("\n[8/8] Running predictions...")
+    Returns:
+        pd.DataFrame: Game predictions written to weekly_predictions.
+    """
     print("  Game picks...")
     df = run_game_predictions()
     print("  Props...")
     run_props_predictions()
-
     return df
 
 

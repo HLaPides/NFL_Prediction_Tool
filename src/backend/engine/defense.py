@@ -1,3 +1,38 @@
+"""
+defense.py — Opponent-adjusted defensive EPA ratings (DVOA-style).
+
+Builds rolling pre-game defensive quality ratings for every team and game,
+adjusting for opponent offensive strength. A defense that holds an elite
+offense to average results looks better than one that holds a bad offense
+to the same results. This is the key insight from Football Outsiders' DVOA.
+
+Pipeline (build_defense_ratings):
+    1. Load play-by-play from nflverse (run/pass plays, garbage time filtered)
+    2. Build offensive EPA/play baselines per team (rolling, shift(1) for leakage)
+    3. Build position-specific offensive baselines (WR/TE/RB targets via roster join)
+    4. Calculate raw defensive EPA allowed per game
+    5. Opponent-adjust: raw_def - opponent_off_baseline
+    6. Roll the adjusted values over ROLL_WINDOW (4) games
+    7. Apply regression to mean for early-season small samples
+    8. Add season-level defensive ranks across all 32 teams
+
+Key design decisions:
+    - Garbage time filter: wp outside 5%-95% excluded (prevent/stat-padding distort EPA)
+    - shift(1) everywhere: only pre-game information used, no leakage
+    - Roll AFTER adjustment: adj(game1) + adj(game2) / 2, not adj(avg(game1, game2))
+    - Regression weights: {1 game: 25%, 2: 45%, 3: 70%, 4+: 100%} toward league mean
+    - EPA is zero-sum so league average = 0 is always the correct Bayesian prior
+
+Output table: defense_ratings
+    One row per (team, season, week) with roll_adj_def_pass_epa,
+    roll_adj_def_rush_epa, roll_adj_def_wr/te/rb_epa, def_games_played,
+    and pass/rush/wr/te/rb defense ranks.
+
+Usage:
+    python3.11 engine/defense.py                   # rebuild all seasons
+    python3.11 engine/defense.py --current-only    # current season only
+    python3.11 engine/defense.py --seasons 2023 2024 2025
+"""
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))

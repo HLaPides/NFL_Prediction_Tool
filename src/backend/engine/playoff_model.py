@@ -1,3 +1,38 @@
+"""
+playoff_model.py — Logistic regression model for playoff game predictions.
+
+Replaces the main XGBoost spread model silently during playoff weeks (19-22).
+Trained on playoff games only, using features that matter more in the
+postseason (ELO, QB quality, clutch rate, defensive pressure).
+
+Architecture:
+    LogisticRegression with L2 regularization, StandardScaler preprocessing.
+    Walk-forward validated on 254 playoff games across 20 seasons.
+
+Params (Optuna-tuned, finalized):
+    C = 0.2105, solver = 'lbfgs'
+
+Features (8):
+    elo_diff, qb_epa_diff, roll_pass_epa_diff, roll_rush_epa_diff,
+    roll_first_downs_diff, clutch_rate_diff, qb_out_diff, roll_def_sacks_diff
+
+Walk-forward results:
+    Overall: 68.9% accuracy  (+5.5% vs Vegas)
+    Wild Card: 62.0%  |  Divisional: 72.7%
+    Conference: 77.3%  |  Super Bowl: 68.2%
+
+Usage:
+    Prediction only (normal operation):
+        model, scaler = load_playoff_model()
+        pred = predict_playoff_game(features_dict, model, scaler)
+
+    Retraining (only needed if DB has changed significantly):
+        python3.11 engine/playoff_model.py
+
+Writes to disk:
+    engine/trained_playoff_model.pkl
+    engine/trained_playoff_scaler.pkl
+"""
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -15,15 +50,20 @@ from data.sql_helpers import get_connection
 from engine.model import load_training_data, FEATURE_COLS
 
 # ── Config ────────────────────────────────────────────────────────────────────
-PLAYOFF_C        = 0.2105
+PLAYOFF_C        = 0.2105   # Optuna-tuned, confirmed — do not change without retuning
 PLAYOFF_SOLVER   = 'lbfgs'
 PLAYOFF_MAX_ITER = 1000
 MIN_TRAIN_SEASONS = 5
 
 PLAYOFF_FEATURES = [
-    'elo_diff', 'qb_epa_diff', 'roll_pass_epa_diff',
-    'roll_rush_epa_diff', 'roll_first_downs_diff',
-    'clutch_rate_diff', 'qb_out_diff', 'roll_def_sacks_diff',
+    'elo_diff',            # Team quality differential — strongest single feature
+    'qb_epa_diff',         # Starter EPA per attempt differential
+    'roll_pass_epa_diff',  # Recent passing EPA trend
+    'roll_rush_epa_diff',  # Recent rushing EPA trend
+    'roll_first_downs_diff',
+    'clutch_rate_diff',    # Close-game win rate — matters more in playoffs
+    'qb_out_diff',         # Binary: opponent QB confirmed out
+    'roll_def_sacks_diff', # Defensive pressure differential
 ]
 
 MODEL_DIR   = Path(__file__).resolve().parent
@@ -33,6 +73,7 @@ SCALER_PATH = MODEL_DIR / "trained_playoff_scaler.pkl"
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
 def get_playoff_ids() -> set:
+    """Return set of game_ids for all playoff games in the DB."""
     with get_connection() as conn:
         df = pd.read_sql("""
             SELECT game_id FROM schedules
@@ -42,6 +83,7 @@ def get_playoff_ids() -> set:
 
 
 def get_playoff_metadata() -> pd.DataFrame:
+    """Return game_id, game_type, season, week, home_team, away_team for all playoff games."""
     with get_connection() as conn:
         return pd.read_sql("""
             SELECT game_id, game_type, season, week, home_team, away_team
@@ -52,6 +94,16 @@ def get_playoff_metadata() -> pd.DataFrame:
 
 
 def load_playoff_training_data() -> tuple:
+    """
+    Load training data filtered to playoff games only.
+
+    Returns:
+        tuple: (X, y, playoff_df, full_df)
+            X: feature matrix (PLAYOFF_FEATURES columns)
+            y: binary labels (1 = home team won)
+            playoff_df: full DataFrame of playoff rows
+            full_df: complete training data (needed for walk-forward)
+    """
     df          = load_training_data()
     playoff_ids = get_playoff_ids()
     playoff_df  = df[df["game_id"].isin(playoff_ids)].copy()
@@ -64,70 +116,20 @@ def load_playoff_training_data() -> tuple:
     return X, y, playoff_df, df
 
 
-# ── Hyperparameter tuning ─────────────────────────────────────────────────────
-def tune_playoff_model(X: pd.DataFrame, y: np.ndarray) -> dict:
-    print(f"\n{'='*55}")
-    print(f"STEP 1 — HYPERPARAMETER TUNING")
-    print(f"{'='*55}")
-    print(f"  Dataset: {len(X)} playoff games, {len(PLAYOFF_FEATURES)} features")
-
-    C_values = [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.5, 1.0]
-    configs  = [
-        ("lbfgs",     "l2"),
-        ("liblinear", "l1"),
-        ("liblinear", "l2"),
-    ]
-
-    scaler   = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-
-    best_score  = 0.0
-    best_params = {"C": PLAYOFF_C, "solver": PLAYOFF_SOLVER, "penalty": "l2"}
-    all_results = []
-
-    print(f"\n  {'C':>8} {'Solver':<12} {'Penalty':<8} {'CV Acc':>8} {'Std':>6}")
-    print(f"  {'-'*48}")
-
-    for solver, penalty in configs:
-        for C in C_values:
-            try:
-                model  = LogisticRegression(
-                    C=C, solver=solver, penalty=penalty,
-                    max_iter=2000, random_state=42,
-                )
-                scores = cross_val_score(model, X_scaled, y, cv=5, scoring="accuracy")
-                mean_s = scores.mean()
-                std_s  = scores.std()
-                all_results.append({
-                    "C": C, "solver": solver, "penalty": penalty,
-                    "score": mean_s, "std": std_s,
-                })
-                marker = "  ← best" if mean_s > best_score else ""
-                print(f"  {C:>8.3f} {solver:<12} {penalty:<8} "
-                      f"{mean_s*100:>7.2f}%  {std_s*100:>5.2f}%{marker}")
-                if mean_s > best_score:
-                    best_score  = mean_s
-                    best_params = {"C": C, "solver": solver, "penalty": penalty}
-            except Exception:
-                continue
-
-    print(f"\n  Best: C={best_params['C']}, solver={best_params['solver']}, "
-          f"penalty={best_params['penalty']}")
-    print(f"  Best CV accuracy: {best_score*100:.2f}%")
-
-    top5 = sorted(all_results, key=lambda x: x["score"], reverse=True)[:5]
-    print(f"\n  Top 5 configurations:")
-    for r in top5:
-        print(f"    C={r['C']:<6}  {r['solver']:<12}  {r['penalty']:<6}  "
-              f"{r['score']*100:.2f}%  ±{r['std']*100:.2f}%")
-
-    return best_params
-
-
 # ── Training ──────────────────────────────────────────────────────────────────
-def train_playoff_model(C: float, solver: str) -> tuple:
+def train_playoff_model(C: float = PLAYOFF_C, solver: str = PLAYOFF_SOLVER) -> tuple:
+    """
+    Train logistic regression on all historical playoff games and save to disk.
+
+    Args:
+        C: Regularization strength (lower = more regularized).
+        solver: Optimization solver ('lbfgs' or 'liblinear').
+
+    Returns:
+        tuple: (fitted LogisticRegression, fitted StandardScaler)
+    """
     print(f"\n{'='*55}")
-    print(f"STEP 2 — TRAINING")
+    print(f"TRAINING")
     print(f"{'='*55}")
     print(f"  C={C}, solver={solver}")
 
@@ -162,8 +164,18 @@ def train_playoff_model(C: float, solver: str) -> tuple:
 
 # ── Walk-forward validation ───────────────────────────────────────────────────
 def validate_playoff_model(C: float, df: pd.DataFrame) -> None:
+    """
+    Run walk-forward validation across all playoff seasons.
+
+    For each test season N: train on playoff games from seasons 1..N-1,
+    predict playoff games in season N. Reports accuracy vs Vegas by round.
+
+    Args:
+        C: Regularization strength to use for validation.
+        df: Full training DataFrame (includes both regular season and playoff games).
+    """
     print(f"\n{'='*55}")
-    print(f"STEP 3 — WALK-FORWARD VALIDATION")
+    print(f"WALK-FORWARD VALIDATION")
     print(f"{'='*55}")
 
     playoff_ids  = get_playoff_ids()
@@ -236,8 +248,7 @@ def validate_playoff_model(C: float, df: pd.DataFrame) -> None:
     hc        = res[(res["playoff_prob"] >= 0.65) | (res["playoff_prob"] <= 0.35)]
     hc_acc    = hc["correct"].mean() * 100 if len(hc) > 0 else 0
 
-    print(f"  Prob range: {res['playoff_prob'].min():.2f} — {res['playoff_prob'].max():.2f}")
-    print(f"\n  Games: {total}  |  Accuracy: {acc:.1f}%  |  Vegas: {vegas_acc:.1f}%")
+    print(f"  Games: {total}  |  Accuracy: {acc:.1f}%  |  Vegas: {vegas_acc:.1f}%")
     print(f"  Edge over Vegas: {acc-vegas_acc:+.1f}%")
     print(f"  Both agree: {agree.sum()} games → {agree_acc:.1f}% accuracy")
     print(f"  High confidence (>0.65 or <0.35): {len(hc)} games → {hc_acc:.1f}%")
@@ -265,6 +276,15 @@ def validate_playoff_model(C: float, df: pd.DataFrame) -> None:
 
 # ── Load / predict ────────────────────────────────────────────────────────────
 def load_playoff_model() -> tuple:
+    """
+    Load trained model and scaler from disk.
+
+    Returns:
+        tuple: (LogisticRegression, StandardScaler)
+
+    Raises:
+        FileNotFoundError: If pkl files don't exist — run playoff_model.py to train.
+    """
     if not MODEL_PATH.exists() or not SCALER_PATH.exists():
         raise FileNotFoundError(
             "Playoff model not found. Run engine/playoff_model.py to train."
@@ -280,8 +300,15 @@ def predict_playoff_game(game_features: dict,
                           model=None, scaler=None) -> dict:
     """
     Predict win probability for a single playoff game.
-    game_features: dict with keys matching PLAYOFF_FEATURES.
-    Returns home_win_prob, away_win_prob, playoff_pick, confidence.
+
+    Args:
+        game_features: Dict with keys matching PLAYOFF_FEATURES. Missing keys → 0.
+        model: Pre-loaded LogisticRegression. If None, loads from disk.
+        scaler: Pre-loaded StandardScaler. If None, loads from disk.
+
+    Returns:
+        dict: home_win_prob, away_win_prob, playoff_pick ('home'|'away'), confidence.
+              confidence = |prob - 0.5| × 2, so 0.0 = coin flip, 1.0 = certain.
     """
     if model is None or scaler is None:
         model, scaler = load_playoff_model()
@@ -297,24 +324,19 @@ def predict_playoff_game(game_features: dict,
     }
 
 
-# ── Main — tune → train → validate ───────────────────────────────────────────
+# ── Main — train → validate ───────────────────────────────────────────────────
 if __name__ == "__main__":
-    print("Playoff model — tune, train, validate")
+    print("Playoff model — train and validate")
     print("=" * 55)
-    print(f"  Regularization C:  {PLAYOFF_C}")
-    print(f"  Features:          {len(PLAYOFF_FEATURES)}")
+    print(f"  C={PLAYOFF_C}, solver={PLAYOFF_SOLVER}")
+    print(f"  Features: {len(PLAYOFF_FEATURES)}")
 
     print("\nLoading training data...")
     X, y, _, df_full = load_playoff_training_data()
     print(f"  {len(X)} playoff games loaded")
 
-    best_params = tune_playoff_model(X, y)
-    best_C      = best_params["C"]
-    best_solver = best_params["solver"]
-
-    train_playoff_model(best_C, best_solver)
-    validate_playoff_model(best_C, df_full)
+    train_playoff_model(PLAYOFF_C, PLAYOFF_SOLVER)
+    validate_playoff_model(PLAYOFF_C, df_full)
 
     print(f"\n{'='*55}")
     print(f"Done. Model saved to {MODEL_PATH}")
-    print(f"Update PLAYOFF_C = {best_C} in playoff_model.py if desired.")

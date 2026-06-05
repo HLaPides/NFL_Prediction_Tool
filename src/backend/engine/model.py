@@ -1,3 +1,35 @@
+"""
+model.py — XGBoost spread model: training, backtesting, and edge calculation.
+
+Architecture (final, locked):
+    Pure XGBoost trained on ATS margin (result - vegas_spread) as the target.
+    Vegas spread is included as a peer feature (not a stacking anchor).
+    Output is ATS margin prediction; convert back to spread by adding vegas_spread.
+
+    This means the model learns market inefficiency directly. Vegas importance
+    sits at ~37% — it's informative but not dominant. The model has genuine
+    independent signal.
+
+Params (Optuna-tuned, 403 trials, confirmed ceiling):
+    n_estimators=403, max_depth=2, learning_rate=0.0339,
+    subsample=0.7768, colsample_bytree=0.7109, min_child_weight=6,
+    gamma=1.7893, reg_alpha=3.0354, reg_lambda=7.8139
+
+Edge filter (asymmetric — key finding):
+    Underdog bets: all edges ≥ threshold (model overcorrects upward on dogs)
+    Favorite bets: gap ≤ 3.0 AND spread magnitude ≤ 7 only
+    Additional filters: no divisional games, no weeks 17-18
+
+Backtest results (walk-forward, 20 seasons):
+    66.4% winner accuracy, 58.7% ATS on 446 filtered bets, +$5,418 ROI
+
+Walk-forward methodology:
+    Train on seasons 1..N-1, test on season N. Never touches future data.
+    Bootstrap confidence: std across 25 bootstrap models per game.
+
+Writes to DB:
+    trained_base_model.pkl (on disk), model_predictions (table)
+"""
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -12,7 +44,7 @@ from data.sql_helpers import get_connection, save
 # ── Constants ─────────────────────────────────────────────────────────────────
 MIN_SEASON        = 1999
 INJURY_MIN_SEASON = 2015
-EDGE_THRESHOLD    = 2.0   # no-div + no-late = 891 bets, 54.2% ATS, +$3,109
+EDGE_THRESHOLD    = 2.0
 MIN_TRAIN_SEASONS = 5
 UNIT_BET          = 100
 ODDS              = -110
@@ -39,6 +71,18 @@ STATUS_SEVERITY = {
 
 # ── Injury feature builder ────────────────────────────────────────────────────
 def build_injury_features() -> pd.DataFrame:
+    """
+    Build pre-game injury scores for every historical game.
+
+    Computes a weighted severity score per team per game:
+        pos_weight × status_severity for each injured player, summed.
+
+    QB out is tracked as a separate binary flag (qb_out_diff used in playoff model).
+    Only available from INJURY_MIN_SEASON (2015) onward — earlier games get 0.
+
+    Returns:
+        pd.DataFrame: One row per game_id with injury_score_diff and qb_out_diff.
+    """
     with get_connection() as conn:
         inj = pd.read_sql("""
             SELECT season, week, team, position, report_status, full_name
@@ -91,6 +135,17 @@ def build_injury_features() -> pd.DataFrame:
 
 # ── Clutch feature builder ────────────────────────────────────────────────────
 def build_clutch_features() -> pd.DataFrame:
+    """
+    Build rolling clutch rate (win% in close games) for every historical game.
+
+    Close game = final margin ≤ CLOSE_GAME_MARGIN (7 pts).
+    Rolling window = CLUTCH_ROLL (8 games), min 3 close games required.
+    Uses shift(1) to ensure pre-game only — no leakage.
+
+    Returns:
+        pd.DataFrame: One row per game_id with home_clutch_rate and away_clutch_rate.
+                      Null teams filled to 0.5 (neutral).
+    """
     with get_connection() as conn:
         games = pd.read_sql("""
             SELECT game_id, season, week, home_team, away_team, result
@@ -154,6 +209,20 @@ def build_clutch_features() -> pd.DataFrame:
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 def load_training_data() -> pd.DataFrame:
+    """
+    Load and assemble the full training dataset from DB.
+
+    Joins schedules → ELO history → player features → game odds →
+    game conditions → rolling team stats → defense ratings, then
+    merges injury and clutch features computed in-memory.
+
+    All diff columns are home - away (positive = home team advantage).
+    Vegas spread sign convention: positive = home team favored.
+
+    Returns:
+        pd.DataFrame: One row per completed game with all features and result.
+                      Ready to pass directly to FEATURE_COLS selection.
+    """
     with get_connection() as conn:
         df = pd.read_sql("""
             SELECT
@@ -249,32 +318,37 @@ def load_training_data() -> pd.DataFrame:
 
 # ── Feature columns ───────────────────────────────────────────────────────────
 FEATURE_COLS = [
-    "vegas_spread",
-    "elo_diff",
+    "vegas_spread",        # Vegas opening/closing spread — peer feature, not anchor
+    "elo_diff",            # ELO rating differential (home - away)
     "roll_pass_yards_diff",
-    "injury_score_diff",
+    "injury_score_diff",   # Weighted injury severity (home - away)
     "roll_def_tfl_diff",
     "roll_pass_epa_diff",
     "te_yards_diff",
-    "qb_epa_diff",
+    "qb_epa_diff",         # EPA per attempt differential (starter, injury-adjusted)
     "wr_yards_diff",
     "rb_rush_diff",
     "roll_first_downs_diff",
     "roll_def_sacks_diff",
-    "is_dome",
+    "is_dome",             # 1 if dome/closed roof
     "roll_rush_epa_diff",
-    "rest_diff",
+    "rest_diff",           # Days rest differential (home - away)
     "roll_rush_yards_diff",
     "roll_penalty_diff",
     "roll_def_ints_diff",
-    "clutch_rate_diff",
+    "clutch_rate_diff",    # Close-game win rate differential
     "rb_rec_diff",
-    "high_wind",
+    "high_wind",           # 1 if wind > 15 mph
 ]
 
 
-# ── Model ─────────────────────────────────────────────────────────────────────
+# ── Model factory ─────────────────────────────────────────────────────────────
 def _make_base() -> XGBRegressor:
+    """
+    Instantiate the XGBoost model with Optuna-tuned params.
+    These params are final — confirmed ceiling across 3+ Optuna runs.
+    Do not change without re-running hyperparameter_tuning.py.
+    """
     return XGBRegressor(
         n_estimators=403,
         max_depth=2,
@@ -291,9 +365,14 @@ def _make_base() -> XGBRegressor:
 
 def _stack(train: pd.DataFrame, test: pd.DataFrame) -> np.ndarray:
     """
-    Pure XGBoost trained on ATS margin (result - vegas_spread).
-    Predicts market inefficiency directly.
-    Output converted back to spread by adding vegas_spread.
+    Train model on ATS margin target and predict for test set.
+
+    Target: result - vegas_spread (ATS margin)
+    Output: ATS prediction + vegas_spread = implied spread
+
+    This architecture lets the model learn market inefficiency directly.
+    Vegas spread as a peer feature contributes ~37% importance — informative
+    but not dominant, unlike the old Ridge stacker (83% Vegas weight).
     """
     X_train = train[FEATURE_COLS].fillna(0)
     y_train = train["result"] - train["vegas_spread"].fillna(0)
@@ -309,6 +388,15 @@ def _stack(train: pd.DataFrame, test: pd.DataFrame) -> np.ndarray:
 # ── Walk-forward backtest ─────────────────────────────────────────────────────
 def _bootstrap_confidence(train: pd.DataFrame, test: pd.DataFrame,
                            n_boots: int = 10) -> np.ndarray:
+    """
+    Estimate prediction uncertainty via bootstrap resampling.
+
+    Fits n_boots models on bootstrap samples of train, computes std of
+    predictions across models. Higher std = lower confidence in the pick.
+
+    Returns:
+        np.ndarray: Per-game confidence scores (std of spread predictions).
+    """
     preds = []
     rng   = np.random.default_rng(42)
     for _ in range(n_boots):
@@ -323,6 +411,17 @@ def _bootstrap_confidence(train: pd.DataFrame, test: pd.DataFrame,
 
 
 def walk_forward_backtest(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Run a strict walk-forward backtest across all seasons.
+
+    For each test season N: train on seasons 1..N-1, predict N.
+    Requires at least 2 training seasons before predicting.
+    Bootstrap confidence computed per season.
+
+    Returns:
+        pd.DataFrame: All predictions with model_spread, spread_gap,
+                      model_winner, vegas_winner, actual_winner, confidence.
+    """
     seasons = sorted(df["season"].unique())
     results = []
 
@@ -349,17 +448,33 @@ def walk_forward_backtest(df: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(results, ignore_index=True)
 
 
-# ── Edge calculation — no-div is default ─────────────────────────────────────
+# ── Edge calculation ──────────────────────────────────────────────────────────
 def calculate_edges(df: pd.DataFrame,
                     threshold: float = EDGE_THRESHOLD,
                     no_div: bool = True,
                     no_late: bool = True,
                     max_std: float = None) -> pd.DataFrame:
     """
-    Edge filter with asymmetric favorite/underdog rules:
-    - Underdog bets: all edges >= threshold
-    - Favorite bets: gap <= 3.0 AND spread magnitude <= 7
-      (model overcorrects on large-gap heavy favorites)
+    Apply the asymmetric edge filter to backtest results.
+
+    Underdog bets: all games where model disagrees with Vegas by ≥ threshold.
+    Favorite bets: additionally require gap ≤ 3.0 AND spread magnitude ≤ 7.
+        Rationale: model systematically overcorrects on large-gap heavy favorites.
+        Gap 2-3 on favorites → 58.3% ATS; Gap 4-5 on favorites → 40.3% ATS.
+
+    Default filters (no_div=True, no_late=True):
+        - Skip divisional games (model underperforms, likely due to familiarity)
+        - Skip weeks 17-18 (rest management distorts results)
+
+    Args:
+        df: Output of walk_forward_backtest().
+        threshold: Minimum |spread_gap| to consider a bet (default 2.0).
+        no_div: Skip divisional games.
+        no_late: Skip weeks 17-18.
+        max_std: Optional bootstrap confidence cutoff (lower = more certain).
+
+    Returns:
+        pd.DataFrame: Filtered edge games with ats_win and payout columns.
     """
     df = df[df["season"] >= df["season"].min() + MIN_TRAIN_SEASONS].copy()
     if no_late:
@@ -378,13 +493,11 @@ def calculate_edges(df: pd.DataFrame,
     e["bet_home"]   = e["spread_gap"] > 0
     e["spread_mag"] = e["vegas_spread"].abs()
 
-    # Identify favorite bets vs underdog bets
     e["is_fav_bet"] = (
         (e["bet_home"] & (e["vegas_spread"] > 0)) |
         (~e["bet_home"] & (e["vegas_spread"] < 0))
     )
 
-    # Apply tighter filter on favorite bets only
     fav_mask = e["is_fav_bet"] & (e["spread_gap"].abs() <= 3.0) & (e["spread_mag"] <= 7)
     dog_mask = ~e["is_fav_bet"]
     e = e[fav_mask | dog_mask].copy()
@@ -397,6 +510,10 @@ def calculate_edges(df: pd.DataFrame,
 
 
 def apply_sharp_filter(edges: pd.DataFrame) -> pd.DataFrame:
+    """
+    Filter edges to only bets where sharp money agrees with the model.
+    Games with no line movement data are included (benefit of the doubt).
+    """
     with get_connection() as conn:
         lm = pd.read_sql("""
             SELECT game_id, spread_move, sharp_home, sharp_away
@@ -413,6 +530,7 @@ def apply_sharp_filter(edges: pd.DataFrame) -> pd.DataFrame:
 
 # ── Reporting ─────────────────────────────────────────────────────────────────
 def print_report(df: pd.DataFrame) -> None:
+    """Print per-season accuracy and vs-Vegas delta for all backtest results."""
     seasons = sorted(df["season"].unique())
     print(f"\n{'='*55}")
     print(f"{'Season':<8} {'Games':>6} {'MAE':>6} {'Winner%':>8} {'vs Vegas%':>10}")
@@ -434,6 +552,7 @@ def print_report(df: pd.DataFrame) -> None:
 
 
 def print_edge_report(df_edges: pd.DataFrame, label: str = "Edges") -> None:
+    """Print per-season ATS win rate and ROI for a filtered edge set."""
     if df_edges.empty:
         print("No edges found.")
         return
@@ -463,6 +582,7 @@ def print_edge_report(df_edges: pd.DataFrame, label: str = "Edges") -> None:
 
 
 def print_stacked_filter_report(results: pd.DataFrame) -> None:
+    """Print ATS% and ROI for every combination of threshold/filter settings."""
     print(f"\n{'='*80}")
     print("Stacked filter sensitivity — all combinations")
     print(f"{'Thresh':>7} {'NoDiv':>6} {'NoLate':>7} {'Sharp':>6} {'Bets':>6} {'ATS%':>8} {'ROI($)':>10}")
@@ -486,6 +606,18 @@ def print_stacked_filter_report(results: pd.DataFrame) -> None:
 
 # ── Train & save ──────────────────────────────────────────────────────────────
 def train_final_model(df: pd.DataFrame) -> XGBRegressor:
+    """
+    Train the model on all available historical data and save to disk.
+
+    Trains on ATS margin target (result - vegas_spread).
+    Saves to engine/trained_base_model.pkl for use by predictor.py.
+
+    Args:
+        df: Full training DataFrame from load_training_data().
+
+    Returns:
+        XGBRegressor: The fitted model.
+    """
     X = df[FEATURE_COLS].fillna(0)
     y = df["result"] - df["vegas_spread"].fillna(0)
     base = _make_base()
@@ -498,6 +630,13 @@ def train_final_model(df: pd.DataFrame) -> XGBRegressor:
 
 
 def load_trained_model() -> tuple:
+    """
+    Load the trained model from disk.
+
+    Returns:
+        tuple: (XGBRegressor, None) — second element is a legacy placeholder
+               from the old Ridge stacker architecture (now removed).
+    """
     model_dir = Path(__file__).resolve().parent
     with open(model_dir / "trained_base_model.pkl", "rb") as f:
         base = pickle.load(f)
@@ -517,7 +656,7 @@ if __name__ == "__main__":
     print_report(results)
 
     print("\nBase edges (no-div default):")
-    df_edges = calculate_edges(results)  # no filters by default
+    df_edges = calculate_edges(results)
     print_edge_report(df_edges, label="Base edges (threshold=2.0, all games)")
 
     print("\nStacked filter analysis:")
