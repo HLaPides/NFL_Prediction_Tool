@@ -1,0 +1,20 @@
+# Database — local state, do not commit
+data/jaginator.db
+data/*.db-journal
+
+# Trained models — large binaries, regenerate via weekly_update.py
+engine/trained_base_model.pkl
+engine/trained_meta_model.pkl
+engine/trained_playoff_model.pkl
+engine/trained_playoff_scaler.pkl
+engine/props/props_qb_*.pkl
+engine/props/props_rb_*.pkl
+engine/props/props_wr_*.pkl
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
