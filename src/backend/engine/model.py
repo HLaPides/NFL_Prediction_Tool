@@ -7,13 +7,12 @@ import pandas as pd
 import numpy as np
 from xgboost import XGBRegressor
 from sklearn.metrics import mean_absolute_error
-from sklearn.linear_model import Ridge
 from data.sql_helpers import get_connection, save
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 MIN_SEASON        = 1999
 INJURY_MIN_SEASON = 2015
-EDGE_THRESHOLD    = 2.5
+EDGE_THRESHOLD    = 2.0   # no-div + no-late = 891 bets, 54.2% ATS, +$3,109
 MIN_TRAIN_SEASONS = 5
 UNIT_BET          = 100
 ODDS              = -110
@@ -92,12 +91,6 @@ def build_injury_features() -> pd.DataFrame:
 
 # ── Clutch feature builder ────────────────────────────────────────────────────
 def build_clutch_features() -> pd.DataFrame:
-    """
-    Rolling close-game win rate per team — win rate in games decided
-    by CLOSE_GAME_MARGIN points or fewer over the last CLUTCH_ROLL games.
-    Merged back to game level as home_clutch_rate and away_clutch_rate.
-    Shift(1) applied to prevent leakage.
-    """
     with get_connection() as conn:
         games = pd.read_sql("""
             SELECT game_id, season, week, home_team, away_team, result
@@ -107,7 +100,6 @@ def build_clutch_features() -> pd.DataFrame:
             ORDER BY season, week
         """, conn)
 
-    # Build per-team records — one row per team per game
     home_rows = games[["game_id", "season", "week", "home_team", "result"]].copy()
     home_rows = home_rows.rename(columns={"home_team": "team"})
     home_rows["team_won"] = (home_rows["result"] > 0).astype(float)
@@ -136,11 +128,8 @@ def build_clutch_features() -> pd.DataFrame:
         all_rows["roll_close_wins"] / all_rows["roll_close_games"].replace(0, np.nan)
     ).fillna(0.5)
 
-    # Keep only game_id + team + clutch rate
     clutch = all_rows[["game_id", "team", "roll_clutch_rate"]].copy()
 
-    # Merge to game level using separate joins for home and away
-    # This avoids the duplication problem from merging a long table twice
     home_c = (
         games[["game_id", "home_team"]]
         .merge(
@@ -194,8 +183,6 @@ def load_training_data() -> pd.DataFrame:
                 hr.roll_turnovers      AS home_roll_turnovers,
                 hr.roll_first_downs    AS home_roll_first_downs,
                 hr.roll_penalty_yards  AS home_roll_penalty_yards,
-                hr.roll_avg_margin     AS home_roll_avg_margin,
-                hr.roll_margin_trend   AS home_roll_margin_trend,
                 ar.roll_passing_epa    AS away_roll_pass_epa,
                 ar.roll_rushing_epa    AS away_roll_rush_epa,
                 ar.roll_passing_yards  AS away_roll_pass_yards,
@@ -206,8 +193,6 @@ def load_training_data() -> pd.DataFrame:
                 ar.roll_turnovers      AS away_roll_turnovers,
                 ar.roll_first_downs    AS away_roll_first_downs,
                 ar.roll_penalty_yards  AS away_roll_penalty_yards,
-                ar.roll_avg_margin     AS away_roll_avg_margin,
-                ar.roll_margin_trend   AS away_roll_margin_trend,
                 hd.roll_adj_def_pass_epa AS home_adj_def_pass_epa,
                 hd.roll_adj_def_rush_epa AS home_adj_def_rush_epa,
                 ad.roll_adj_def_pass_epa AS away_adj_def_pass_epa,
@@ -243,8 +228,6 @@ def load_training_data() -> pd.DataFrame:
     df["roll_turnovers_diff"]        = df["home_roll_turnovers"]     - df["away_roll_turnovers"]
     df["roll_first_downs_diff"]      = df["home_roll_first_downs"]   - df["away_roll_first_downs"]
     df["roll_penalty_diff"]          = df["home_roll_penalty_yards"] - df["away_roll_penalty_yards"]
-    df["roll_avg_margin_diff"]       = df["home_roll_avg_margin"]    - df["away_roll_avg_margin"]
-    df["roll_margin_trend_diff"]     = df["home_roll_margin_trend"]  - df["away_roll_margin_trend"]
     df["roll_adj_def_pass_epa_diff"] = df["home_adj_def_pass_epa"].fillna(0) - df["away_adj_def_pass_epa"].fillna(0)
     df["roll_adj_def_rush_epa_diff"] = df["home_adj_def_rush_epa"].fillna(0) - df["away_adj_def_rush_epa"].fillna(0)
 
@@ -260,95 +243,82 @@ def load_training_data() -> pd.DataFrame:
     df["away_clutch_rate"] = df["away_clutch_rate"].fillna(0.5)
     df["clutch_rate_diff"] = df["home_clutch_rate"] - df["away_clutch_rate"]
 
-    # Sanity check — should match original game count
     print(f"  Training rows after all merges: {len(df):,}")
-
     return df
 
 
 # ── Feature columns ───────────────────────────────────────────────────────────
 FEATURE_COLS = [
+    "vegas_spread",
     "elo_diff",
-    "rest_diff",
-    "is_dome",
-    "high_wind",
+    "roll_pass_yards_diff",
+    "injury_score_diff",
+    "roll_def_tfl_diff",
+    "roll_pass_epa_diff",
+    "te_yards_diff",
     "qb_epa_diff",
     "wr_yards_diff",
-    "te_yards_diff",
     "rb_rush_diff",
-    "rb_rec_diff",
-    "roll_pass_epa_diff",
-    "roll_rush_epa_diff",
-    "roll_pass_yards_diff",
-    "roll_rush_yards_diff",
-    "roll_def_sacks_diff",
-    "roll_def_ints_diff",
-    "roll_def_tfl_diff",
-    "roll_turnovers_diff",
-    "roll_penalty_diff",
     "roll_first_downs_diff",
-    "roll_adj_def_pass_epa_diff",
-    "roll_adj_def_rush_epa_diff",
-    "injury_score_diff",
-    "qb_out_diff",
-    "home_qb_out",
-    "away_qb_out",
+    "roll_def_sacks_diff",
+    "is_dome",
+    "roll_rush_epa_diff",
+    "rest_diff",
+    "roll_rush_yards_diff",
+    "roll_penalty_diff",
+    "roll_def_ints_diff",
     "clutch_rate_diff",
+    "rb_rec_diff",
+    "high_wind",
 ]
 
 
-# ── Model helpers ─────────────────────────────────────────────────────────────
+# ── Model ─────────────────────────────────────────────────────────────────────
 def _make_base() -> XGBRegressor:
     return XGBRegressor(
-        n_estimators=200, max_depth=3, learning_rate=0.01,
-        subsample=0.8, colsample_bytree=1.0,
+        n_estimators=403,
+        max_depth=2,
+        learning_rate=0.0339,
+        subsample=0.7768,
+        colsample_bytree=0.7109,
+        min_child_weight=6,
+        gamma=1.7893,
+        reg_alpha=3.0354,
+        reg_lambda=7.8139,
         random_state=42, verbosity=0,
     )
 
 
 def _stack(train: pd.DataFrame, test: pd.DataFrame) -> np.ndarray:
+    """
+    Pure XGBoost trained on ATS margin (result - vegas_spread).
+    Predicts market inefficiency directly.
+    Output converted back to spread by adding vegas_spread.
+    """
     X_train = train[FEATURE_COLS].fillna(0)
-    y_train = train["result"]
+    y_train = train["result"] - train["vegas_spread"].fillna(0)
     X_test  = test[FEATURE_COLS].fillna(0)
 
     base = _make_base()
     base.fit(X_train, y_train)
 
-    mid     = len(train) // 2
-    train_a = train.iloc[:mid]
-    train_b = train.iloc[mid:]
-
-    base_a = _make_base()
-    base_a.fit(train_a[FEATURE_COLS].fillna(0), train_a["result"])
-    oof = base_a.predict(train_b[FEATURE_COLS].fillna(0))
-
-    meta = Ridge(alpha=1.0)
-    meta.fit(
-        np.column_stack([oof,
-                         train_b["vegas_spread"].fillna(0).values,
-                         train_b["elo_diff"].fillna(0).values]),
-        train_b["result"].values,
-    )
-
-    base_preds = base.predict(X_test)
-    return meta.predict(np.column_stack([
-        base_preds,
-        test["vegas_spread"].fillna(0).values,
-        test["elo_diff"].fillna(0).values,
-    ]))
+    ats_pred = base.predict(X_test)
+    return ats_pred + test["vegas_spread"].fillna(0).values
 
 
 # ── Walk-forward backtest ─────────────────────────────────────────────────────
 def _bootstrap_confidence(train: pd.DataFrame, test: pd.DataFrame,
-                          n_boots: int = 10) -> np.ndarray:
+                           n_boots: int = 10) -> np.ndarray:
     preds = []
     rng   = np.random.default_rng(42)
     for _ in range(n_boots):
         idx    = rng.integers(0, len(train), size=len(train))
         sample = train.iloc[idx]
         m      = _make_base()
-        m.fit(sample[FEATURE_COLS].fillna(0), sample["result"])
-        preds.append(m.predict(test[FEATURE_COLS].fillna(0)))
+        m.fit(sample[FEATURE_COLS].fillna(0),
+              sample["result"] - sample["vegas_spread"].fillna(0))
+        ats_p = m.predict(test[FEATURE_COLS].fillna(0))
+        preds.append(ats_p + test["vegas_spread"].fillna(0).values)
     return np.std(preds, axis=0)
 
 
@@ -361,8 +331,8 @@ def walk_forward_backtest(df: pd.DataFrame) -> pd.DataFrame:
         if len(train_seasons) < 2:
             continue
 
-        train = df[df["season"].isin(train_seasons)]
-        test  = df[df["season"] == test_season]
+        train      = df[df["season"].isin(train_seasons)]
+        test       = df[df["season"] == test_season]
         preds      = _stack(train, test)
         confidence = _bootstrap_confidence(train, test)
 
@@ -379,24 +349,50 @@ def walk_forward_backtest(df: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(results, ignore_index=True)
 
 
-# ── Edge calculation ──────────────────────────────────────────────────────────
+# ── Edge calculation — no-div is default ─────────────────────────────────────
 def calculate_edges(df: pd.DataFrame,
                     threshold: float = EDGE_THRESHOLD,
-                    max_std:   float = None) -> pd.DataFrame:
+                    no_div: bool = True,
+                    no_late: bool = True,
+                    max_std: float = None) -> pd.DataFrame:
+    """
+    Edge filter with asymmetric favorite/underdog rules:
+    - Underdog bets: all edges >= threshold
+    - Favorite bets: gap <= 3.0 AND spread magnitude <= 7
+      (model overcorrects on large-gap heavy favorites)
+    """
     df = df[df["season"] >= df["season"].min() + MIN_TRAIN_SEASONS].copy()
-    df = df[~df["week"].isin([17, 18])]
+    if no_late:
+        df = df[~df["week"].isin([17, 18])]
+    if no_div and "div_game" in df.columns:
+        df = df[df["div_game"] == 0]
+
     agrees    = (
         ((df["model_spread"] > 0) & (df["vegas_spread"] > 0)) |
         ((df["model_spread"] < 0) & (df["vegas_spread"] < 0))
     )
     large_gap = df["spread_gap"].abs() >= threshold
     confident = df["confidence"] <= max_std if max_std is not None else pd.Series(True, index=df.index)
+
     e = df[agrees & large_gap & confident].copy()
-    e["bet_home"] = e["spread_gap"] > 0
-    e["ats_win"]  = np.where(e["bet_home"],
-                             e["result"] > e["vegas_spread"],
-                             e["result"] < e["vegas_spread"])
-    e["payout"]   = np.where(e["ats_win"], UNIT_BET * (100 / abs(ODDS)), -UNIT_BET)
+    e["bet_home"]   = e["spread_gap"] > 0
+    e["spread_mag"] = e["vegas_spread"].abs()
+
+    # Identify favorite bets vs underdog bets
+    e["is_fav_bet"] = (
+        (e["bet_home"] & (e["vegas_spread"] > 0)) |
+        (~e["bet_home"] & (e["vegas_spread"] < 0))
+    )
+
+    # Apply tighter filter on favorite bets only
+    fav_mask = e["is_fav_bet"] & (e["spread_gap"].abs() <= 3.0) & (e["spread_mag"] <= 7)
+    dog_mask = ~e["is_fav_bet"]
+    e = e[fav_mask | dog_mask].copy()
+
+    e["ats_win"] = np.where(e["bet_home"],
+                            e["result"] > e["vegas_spread"],
+                            e["result"] < e["vegas_spread"])
+    e["payout"]  = np.where(e["ats_win"], UNIT_BET * (100 / abs(ODDS)), -UNIT_BET)
     return e
 
 
@@ -406,7 +402,6 @@ def apply_sharp_filter(edges: pd.DataFrame) -> pd.DataFrame:
             SELECT game_id, spread_move, sharp_home, sharp_away
             FROM line_movement
         """, conn)
-
     e = edges.merge(lm, on="game_id", how="left")
     no_data      = e["spread_move"].isna()
     sharp_agrees = (
@@ -460,7 +455,7 @@ def print_edge_report(df_edges: pd.DataFrame, label: str = "Edges") -> None:
         total_wins += wins
         total_roi  += roi
     print(f"{'='*70}")
-    tw  = total_wins / total_bets * 100 if total_bets else 0
+    tw = total_wins / total_bets * 100 if total_bets else 0
     print(f"{'All-time':<8} {total_bets:>6} {tw:>10.1f}% "
           f"{total_roi:>10.0f} {total_roi/(total_bets*UNIT_BET)*100:>7.1f}%")
     print(f"\nBreak-even ATS%: 52.4%  |  Model: {tw:.1f}%  |  "
@@ -468,89 +463,68 @@ def print_edge_report(df_edges: pd.DataFrame, label: str = "Edges") -> None:
 
 
 def print_stacked_filter_report(results: pd.DataFrame) -> None:
-    print(f"\n{'='*75}")
-    print("Stacked filter sensitivity")
-    print(f"{'Thresh':>7} {'Sharp':>6} {'No Div':>7} {'Bets':>6} {'ATS%':>8} {'ROI($)':>10}")
-    print(f"{'='*75}")
+    print(f"\n{'='*80}")
+    print("Stacked filter sensitivity — all combinations")
+    print(f"{'Thresh':>7} {'NoDiv':>6} {'NoLate':>7} {'Sharp':>6} {'Bets':>6} {'ATS%':>8} {'ROI($)':>10}")
+    print(f"{'='*80}")
+    for threshold in [2.0, 2.5, 3.0, 3.5]:
+        for no_div in [False, True]:
+            for no_late in [False, True]:
+                for use_sharp in [False, True]:
+                    edges = calculate_edges(results, threshold=threshold,
+                                            no_div=no_div, no_late=no_late)
+                    if use_sharp:
+                        edges = apply_sharp_filter(edges)
+                    if len(edges) < 5:
+                        continue
+                    ats = edges["ats_win"].mean() * 100
+                    roi = edges["payout"].sum()
+                    print(f"{threshold:>7.1f} {'Y' if no_div else 'N':>6} "
+                          f"{'Y' if no_late else 'N':>7} {'Y' if use_sharp else 'N':>6} "
+                          f"{len(edges):>6} {ats:>7.1f}% {roi:>10.0f}")
 
-    for threshold in [2.0, 2.5, 3.0, 3.5, 4.0]:
-        for use_sharp in [False, True]:
-            for no_div in [False, True]:
-                edges = calculate_edges(results, threshold=threshold)
-                if use_sharp:
-                    edges = apply_sharp_filter(edges)
-                if no_div and "div_game" in edges.columns:
-                    edges = edges[edges["div_game"] == 0]
-                if len(edges) < 3:
-                    continue
-                ats = edges["ats_win"].mean() * 100
-                roi = edges["payout"].sum()
-                print(f"{threshold:>7.1f} {'Y' if use_sharp else 'N':>6} "
-                      f"{'Y' if no_div else 'N':>7} {len(edges):>6} "
-                      f"{ats:>7.1f}% {roi:>10.0f}")
 
-
-# ── Train & save final model ──────────────────────────────────────────────────
-def train_final_model(df: pd.DataFrame) -> tuple:
-    X, y   = df[FEATURE_COLS].fillna(0), df["result"]
-    base   = _make_base()
+# ── Train & save ──────────────────────────────────────────────────────────────
+def train_final_model(df: pd.DataFrame) -> XGBRegressor:
+    X = df[FEATURE_COLS].fillna(0)
+    y = df["result"] - df["vegas_spread"].fillna(0)
+    base = _make_base()
     base.fit(X, y)
-
-    mid    = len(df) // 2
-    base_a = _make_base()
-    base_a.fit(df.iloc[:mid][FEATURE_COLS].fillna(0), df.iloc[:mid]["result"])
-    oof    = base_a.predict(df.iloc[mid:][FEATURE_COLS].fillna(0))
-
-    meta   = Ridge(alpha=1.0)
-    meta.fit(
-        np.column_stack([oof,
-                         df.iloc[mid:]["vegas_spread"].fillna(0).values,
-                         df.iloc[mid:]["elo_diff"].fillna(0).values]),
-        df.iloc[mid:]["result"].values,
-    )
-
     model_dir = Path(__file__).resolve().parent
     with open(model_dir / "trained_base_model.pkl", "wb") as f:
         pickle.dump(base, f)
-    with open(model_dir / "trained_meta_model.pkl", "wb") as f:
-        pickle.dump(meta, f)
-    print(f"Models saved to {model_dir}")
-    return base, meta
+    print(f"  Model saved to {model_dir / 'trained_base_model.pkl'}")
+    return base
 
 
 def load_trained_model() -> tuple:
     model_dir = Path(__file__).resolve().parent
     with open(model_dir / "trained_base_model.pkl", "rb") as f:
         base = pickle.load(f)
-    with open(model_dir / "trained_meta_model.pkl", "rb") as f:
-        meta = pickle.load(f)
-    return base, meta
+    return base, None
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     print("Loading training data...")
     df = load_training_data()
-    print(f"Loaded {len(df)} games ({df['season'].min()}-{df['season'].max()})")
-    print(f"Features: {len(FEATURE_COLS)}")
-
-    print("\nTraining final model on all data...")
-    train_final_model(df)
+    print(f"  {len(df)} games  |  {len(FEATURE_COLS)} features")
+    print(f"  Target: ATS margin (result - vegas_spread)")
+    print(f"  Filter: no restrictions — all games (edge≥{EDGE_THRESHOLD})")
 
     print("\nRunning walk-forward backtest...")
     results = walk_forward_backtest(df)
     print_report(results)
 
-    print("\nBase edges (no filters):")
-    df_edges = calculate_edges(results)
-    print_edge_report(df_edges, label="Base edges (threshold=2.5, no sharp filter)")
-
-    print("\nSharp-filtered edges:")
-    df_sharp = apply_sharp_filter(df_edges)
-    print_edge_report(df_sharp, label="Sharp-filtered edges (threshold=2.5 + sharp agrees)")
+    print("\nBase edges (no-div default):")
+    df_edges = calculate_edges(results)  # no filters by default
+    print_edge_report(df_edges, label="Base edges (threshold=2.0, all games)")
 
     print("\nStacked filter analysis:")
     print_stacked_filter_report(results)
+
+    print("\nTraining final model on all data...")
+    train_final_model(df)
 
     print("\nSaving predictions to model_predictions table...")
     save(results, "model_predictions")

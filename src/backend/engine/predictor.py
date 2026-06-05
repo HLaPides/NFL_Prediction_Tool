@@ -2,6 +2,10 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+import json
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -12,11 +16,12 @@ from engine.props.rb_props import load_props_model as load_rb_model, predict_cur
 from engine.props.wr_props import load_props_model as load_wr_model, predict_current_week as predict_wr
 
 # ── Config ────────────────────────────────────────────────────────────────────
-WIN_PROB_SCALE  = 25.0
-HOME_ADVANTAGE  = 48.0
-SKILL_POSITIONS = {"QB", "RB", "WR", "TE"}
+WIN_PROB_SCALE    = 25.0
+HOME_ADVANTAGE    = 48.0
+SKILL_POSITIONS   = {"QB", "RB", "WR", "TE"}
 CLOSE_GAME_MARGIN = 7
 CLUTCH_ROLL       = 8
+PLAYOFF_WEEKS     = {19, 20, 21, 22}
 
 TEAM_DISPLAY_NAMES = {
     "Arizona Cardinals":   "ARI", "Atlanta Falcons":      "ATL", "Baltimore Ravens":   "BAL",
@@ -46,47 +51,101 @@ STATUS_SEVERITY = {
 QB_OUT_STATUSES = {"Out", "Doubtful", "IR", "PUP"}
 
 
+# ── Playoff detection ─────────────────────────────────────────────────────────
+def is_playoff_week(upcoming: pd.DataFrame) -> bool:
+    if upcoming.empty:
+        return False
+    if upcoming["week"].isin(PLAYOFF_WEEKS).any():
+        return True
+    try:
+        with get_connection() as conn:
+            game_ids     = upcoming["game_id"].tolist()
+            placeholders = ",".join("?" * len(game_ids))
+            types = pd.read_sql(f"""
+                SELECT game_type FROM schedules_current
+                WHERE game_id IN ({placeholders})
+                  AND game_type IN ('WC','DIV','CON','SB')
+            """, conn, params=game_ids)
+        return not types.empty
+    except Exception:
+        return False
+
+
+# ── Playoff predictions table ─────────────────────────────────────────────────
+def ensure_playoff_table():
+    with get_connection() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS playoff_predictions (
+                game_id            TEXT PRIMARY KEY,
+                season             INTEGER,
+                week               INTEGER,
+                home_team          TEXT,
+                away_team          TEXT,
+                home_win_prob      REAL,
+                away_win_prob      REAL,
+                playoff_pick       TEXT,
+                playoff_confidence REAL,
+                features_json      TEXT
+            )
+        """)
+        conn.commit()
+
+
+def save_playoff_prediction(game_id, season, week, home_team, away_team, pred, features):
+    ensure_playoff_table()
+    pick = home_team if pred["playoff_pick"] == "home" else away_team
+    with get_connection() as conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO playoff_predictions
+            (game_id, season, week, home_team, away_team,
+             home_win_prob, away_win_prob, playoff_pick,
+             playoff_confidence, features_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+        """, (
+            game_id, season, week, home_team, away_team,
+            pred["home_win_prob"], pred["away_win_prob"],
+            pick, pred["confidence"],
+            json.dumps({k: float(v) for k, v in features.items()
+                        if isinstance(v, (int, float))})
+        ))
+        conn.commit()
+
+
 # ── Clutch scores ─────────────────────────────────────────────────────────────
 def build_clutch_scores() -> dict:
-    """
-    Compute rolling close-game win rate per team from historical schedules.
-    Returns { team: clutch_rate } using the last CLUTCH_ROLL games.
-    Falls back to 0.5 (league average) if insufficient data.
-    """
     try:
         with get_connection() as conn:
             games = pd.read_sql("""
                 SELECT game_id, season, week, home_team, away_team, result
                 FROM schedules
-                WHERE game_type IN ('REG', 'WC', 'DIV', 'CON', 'SB')
+                WHERE game_type IN ('REG','WC','DIV','CON','SB')
                   AND result IS NOT NULL
                 ORDER BY season, week
             """, conn)
     except Exception as e:
-        print(f"  Clutch scores: failed to load ({e}), using 0.5")
+        print(f"  Clutch scores: failed ({e}), using 0.5")
         return {}
 
-    home_rows = games[["season", "week", "home_team", "result"]].copy()
-    home_rows = home_rows.rename(columns={"home_team": "team"})
+    home_rows = games[["season","week","home_team","result"]].copy()
+    home_rows = home_rows.rename(columns={"home_team":"team"})
     home_rows["team_won"] = (home_rows["result"] > 0).astype(float)
     home_rows["margin"]   = home_rows["result"].abs()
 
-    away_rows = games[["season", "week", "away_team", "result"]].copy()
-    away_rows = away_rows.rename(columns={"away_team": "team"})
+    away_rows = games[["season","week","away_team","result"]].copy()
+    away_rows = away_rows.rename(columns={"away_team":"team"})
     away_rows["team_won"] = (away_rows["result"] < 0).astype(float)
     away_rows["margin"]   = away_rows["result"].abs()
 
     all_rows = pd.concat([home_rows, away_rows], ignore_index=True)
-    all_rows = all_rows.sort_values(["team", "season", "week"]).reset_index(drop=True)
-
+    all_rows = all_rows.sort_values(["team","season","week"]).reset_index(drop=True)
     all_rows["is_close"]  = (all_rows["margin"] <= CLOSE_GAME_MARGIN).astype(float)
     all_rows["close_win"] = all_rows["is_close"] * all_rows["team_won"]
 
     scores = {}
     for team, grp in all_rows.groupby("team"):
-        last_n       = grp.tail(CLUTCH_ROLL)
-        close_games  = last_n["is_close"].sum()
-        close_wins   = last_n["close_win"].sum()
+        last_n      = grp.tail(CLUTCH_ROLL)
+        close_games = last_n["is_close"].sum()
+        close_wins  = last_n["close_win"].sum()
         scores[team] = round(close_wins / close_games, 3) if close_games >= 3 else 0.5
 
     print(f"  Clutch scores built for {len(scores)} teams")
@@ -99,11 +158,9 @@ def build_injury_scores() -> dict:
         with get_connection() as conn:
             inj = pd.read_sql("SELECT * FROM injuries_current", conn)
     except Exception:
-        print("  Warning: could not load injuries_current, using zeros")
         return {}
 
     if inj.empty or "team_display" not in inj.columns:
-        print("  Warning: injuries_current empty or malformed, using zeros")
         return {}
 
     inj["team"] = inj["team_display"].map(TEAM_DISPLAY_NAMES)
@@ -137,21 +194,19 @@ def build_injury_scores() -> dict:
 # ── Load upcoming games ───────────────────────────────────────────────────────
 def load_upcoming_games() -> pd.DataFrame:
     with get_connection() as conn:
-        df = pd.read_sql("""
-            SELECT
-                s.game_id, s.season, s.week,
-                s.home_team, s.away_team,
-                s.gameday, s.gametime,
-                o.spread_line AS vegas_spread
+        return pd.read_sql("""
+            SELECT s.game_id, s.season, s.week,
+                   s.home_team, s.away_team,
+                   s.gameday, s.gametime, s.game_type,
+                   o.spread_line AS vegas_spread
             FROM schedules_current s
             LEFT JOIN game_odds o ON o.game_id = s.game_id
             WHERE s.home_score IS NULL
             ORDER BY s.week, s.gameday, s.gametime
         """, conn)
-    return df
 
 
-# ── Build feature vector for a single game ───────────────────────────────────
+# ── Build feature vector ──────────────────────────────────────────────────────
 def build_game_features(game: pd.Series,
                         inj_scores: dict = None,
                         clutch_scores: dict = None) -> dict:
@@ -160,11 +215,9 @@ def build_game_features(game: pd.Series,
 
     with get_connection() as conn:
         elo = pd.read_sql("""
-            SELECT team, elo_after
-            FROM elo_history
+            SELECT team, elo_after FROM elo_history
             WHERE (team, season * 100 + week) IN (
-                SELECT team, MAX(season * 100 + week)
-                FROM elo_history GROUP BY team
+                SELECT team, MAX(season * 100 + week) FROM elo_history GROUP BY team
             )
         """, conn)
         elo_map = dict(zip(elo["team"], elo["elo_after"]))
@@ -177,27 +230,25 @@ def build_game_features(game: pd.Series,
             ORDER BY s.season DESC, s.week DESC
         """, conn, params=(game["home_team"], game["away_team"]))
 
-        home_roll = roll[roll["team"] == game["home_team"]].iloc[0] if not roll[roll["team"] == game["home_team"]].empty else {}
-        away_roll = roll[roll["team"] == game["away_team"]].iloc[0] if not roll[roll["team"] == game["away_team"]].empty else {}
+        home_roll = roll[roll["team"] == game["home_team"]].iloc[0] \
+                    if not roll[roll["team"] == game["home_team"]].empty else {}
+        away_roll = roll[roll["team"] == game["away_team"]].iloc[0] \
+                    if not roll[roll["team"] == game["away_team"]].empty else {}
 
         pf = pd.read_sql("""
-            SELECT pf.*
-            FROM player_features pf
+            SELECT pf.* FROM player_features pf
             JOIN schedules s ON s.game_id = pf.game_id
-            WHERE s.home_team IN (?, ?) OR s.away_team IN (?, ?)
-            ORDER BY s.season DESC, s.week DESC
-            LIMIT 20
+            WHERE s.home_team IN (?,?) OR s.away_team IN (?,?)
+            ORDER BY s.season DESC, s.week DESC LIMIT 20
         """, conn, params=(game["home_team"], game["away_team"],
                            game["home_team"], game["away_team"]))
 
         cond = pd.read_sql("""
-            SELECT roof, wind FROM game_conditions
-            WHERE game_id = ?
+            SELECT roof, wind FROM game_conditions WHERE game_id = ?
         """, conn, params=(game["game_id"],))
 
         def_ratings = pd.read_sql("""
-            SELECT dr.*
-            FROM defense_ratings dr
+            SELECT dr.* FROM defense_ratings dr
             INNER JOIN (
                 SELECT team, MAX(season * 100 + week) AS max_key
                 FROM defense_ratings GROUP BY team
@@ -208,78 +259,59 @@ def build_game_features(game: pd.Series,
 
     home_elo = elo_map.get(game["home_team"], 1500)
     away_elo = elo_map.get(game["away_team"], 1500)
-    elo_diff = home_elo - away_elo
 
     def get_roll(row, col, default=0.0):
-        try:
-            return float(row[col]) if row is not None and col in row else default
-        except Exception:
-            return default
+        try:   return float(row[col]) if row is not None and col in row else default
+        except: return default
 
     hr = home_roll if isinstance(home_roll, pd.Series) else {}
     ar = away_roll if isinstance(away_roll, pd.Series) else {}
-
-    home_def_row = def_ratings[def_ratings["team"] == game["home_team"]]
-    away_def_row = def_ratings[def_ratings["team"] == game["away_team"]]
+    hdr = def_ratings[def_ratings["team"] == game["home_team"]]
+    adr = def_ratings[def_ratings["team"] == game["away_team"]]
 
     def get_def(row, col, default=0.0):
-        try:
-            return float(row.iloc[0][col]) if not row.empty and col in row.columns else default
-        except Exception:
-            return default
+        try:   return float(row.iloc[0][col]) if not row.empty and col in row.columns else default
+        except: return default
 
-    is_dome   = 1 if not cond.empty and cond.iloc[0]["roof"] in ("dome", "closed") else 0
+    is_dome   = 1 if not cond.empty and cond.iloc[0]["roof"] in ("dome","closed") else 0
     high_wind = 1 if not cond.empty and float(cond.iloc[0]["wind"] or 0) > 15 else 0
 
-    def latest_pf(team: str, col: str) -> float:
-        rows = pf[pf.get("home_team", pd.Series()) == team] if "home_team" in pf.columns else pd.DataFrame()
+    def latest_pf(team, col):
+        rows = pf[pf.get("home_team", pd.Series()) == team] \
+               if "home_team" in pf.columns else pd.DataFrame()
         if rows.empty:
-            rows = pf[pf.get("away_team", pd.Series()) == team] if "away_team" in pf.columns else pd.DataFrame()
+            rows = pf[pf.get("away_team", pd.Series()) == team] \
+                   if "away_team" in pf.columns else pd.DataFrame()
         return float(rows.iloc[0][col]) if not rows.empty and col in rows.columns else 0.0
-
-    home_qb_epa   = latest_pf(game["home_team"], "home_qb_epa")
-    away_qb_epa   = latest_pf(game["away_team"], "away_qb_epa")
-    home_wr_yards = latest_pf(game["home_team"], "home_wr_yards")
-    away_wr_yards = latest_pf(game["away_team"], "away_wr_yards")
-    home_te_yards = latest_pf(game["home_team"], "home_te_yards")
-    away_te_yards = latest_pf(game["away_team"], "away_te_yards")
-    home_rb_rush  = latest_pf(game["home_team"], "home_rb_rush_yards")
-    away_rb_rush  = latest_pf(game["away_team"], "away_rb_rush_yards")
-    home_rb_rec   = latest_pf(game["home_team"], "home_rb_rec_yards")
-    away_rb_rec   = latest_pf(game["away_team"], "away_rb_rec_yards")
 
     home_inj    = inj_scores.get(game["home_team"],    {"injury_score": 0.0, "qb_out": 0})
     away_inj    = inj_scores.get(game["away_team"],    {"injury_score": 0.0, "qb_out": 0})
     home_clutch = clutch_scores.get(game["home_team"], 0.5)
     away_clutch = clutch_scores.get(game["away_team"], 0.5)
+    vegas_spread = float(game["vegas_spread"]) if pd.notna(game["vegas_spread"]) else 0.0
 
     return {
-        "elo_diff":                   elo_diff,
-        "rest_diff":                  0.0,
-        "is_dome":                    is_dome,
-        "high_wind":                  high_wind,
-        "qb_epa_diff":                home_qb_epa      - away_qb_epa,
-        "wr_yards_diff":              home_wr_yards     - away_wr_yards,
-        "te_yards_diff":              home_te_yards     - away_te_yards,
-        "rb_rush_diff":               home_rb_rush      - away_rb_rush,
-        "rb_rec_diff":                home_rb_rec       - away_rb_rec,
-        "roll_pass_epa_diff":         get_roll(hr, "roll_passing_epa")   - get_roll(ar, "roll_passing_epa"),
-        "roll_rush_epa_diff":         get_roll(hr, "roll_rushing_epa")   - get_roll(ar, "roll_rushing_epa"),
-        "roll_pass_yards_diff":       get_roll(hr, "roll_passing_yards") - get_roll(ar, "roll_passing_yards"),
-        "roll_rush_yards_diff":       get_roll(hr, "roll_rushing_yards") - get_roll(ar, "roll_rushing_yards"),
-        "roll_def_sacks_diff":        get_roll(hr, "roll_def_sacks")     - get_roll(ar, "roll_def_sacks"),
-        "roll_def_ints_diff":         get_roll(hr, "roll_def_ints")      - get_roll(ar, "roll_def_ints"),
-        "roll_def_tfl_diff":          get_roll(hr, "roll_def_tfl")       - get_roll(ar, "roll_def_tfl"),
-        "roll_turnovers_diff":        get_roll(hr, "roll_turnovers")     - get_roll(ar, "roll_turnovers"),
-        "roll_penalty_diff":          get_roll(hr, "roll_penalty_yards") - get_roll(ar, "roll_penalty_yards"),
-        "roll_first_downs_diff":      get_roll(hr, "roll_first_downs")   - get_roll(ar, "roll_first_downs"),
-        "roll_adj_def_pass_epa_diff": get_def(home_def_row, "roll_adj_def_pass_epa") - get_def(away_def_row, "roll_adj_def_pass_epa"),
-        "roll_adj_def_rush_epa_diff": get_def(home_def_row, "roll_adj_def_rush_epa") - get_def(away_def_row, "roll_adj_def_rush_epa"),
+        "vegas_spread":               vegas_spread,
+        "elo_diff":                   home_elo - away_elo,
+        "roll_pass_yards_diff":       get_roll(hr,"roll_passing_yards") - get_roll(ar,"roll_passing_yards"),
         "injury_score_diff":          home_inj["injury_score"] - away_inj["injury_score"],
-        "qb_out_diff":                float(away_inj["qb_out"]) - float(home_inj["qb_out"]),
-        "home_qb_out":                float(home_inj["qb_out"]),
-        "away_qb_out":                float(away_inj["qb_out"]),
+        "roll_def_tfl_diff":          get_roll(hr,"roll_def_tfl")       - get_roll(ar,"roll_def_tfl"),
+        "roll_pass_epa_diff":         get_roll(hr,"roll_passing_epa")   - get_roll(ar,"roll_passing_epa"),
+        "te_yards_diff":              latest_pf(game["home_team"],"home_te_yards")  - latest_pf(game["away_team"],"away_te_yards"),
+        "qb_epa_diff":                latest_pf(game["home_team"],"home_qb_epa")    - latest_pf(game["away_team"],"away_qb_epa"),
+        "wr_yards_diff":              latest_pf(game["home_team"],"home_wr_yards")  - latest_pf(game["away_team"],"away_wr_yards"),
+        "rb_rush_diff":               latest_pf(game["home_team"],"home_rb_rush_yards") - latest_pf(game["away_team"],"away_rb_rush_yards"),
+        "roll_first_downs_diff":      get_roll(hr,"roll_first_downs")   - get_roll(ar,"roll_first_downs"),
+        "roll_def_sacks_diff":        get_roll(hr,"roll_def_sacks")     - get_roll(ar,"roll_def_sacks"),
+        "is_dome":                    is_dome,
+        "roll_rush_epa_diff":         get_roll(hr,"roll_rushing_epa")   - get_roll(ar,"roll_rushing_epa"),
+        "rest_diff":                  0.0,
+        "roll_rush_yards_diff":       get_roll(hr,"roll_rushing_yards") - get_roll(ar,"roll_rushing_yards"),
+        "roll_penalty_diff":          get_roll(hr,"roll_penalty_yards") - get_roll(ar,"roll_penalty_yards"),
+        "roll_def_ints_diff":         get_roll(hr,"roll_def_ints")      - get_roll(ar,"roll_def_ints"),
         "clutch_rate_diff":           home_clutch - away_clutch,
+        "rb_rec_diff":                latest_pf(game["home_team"],"home_rb_rec_yards") - latest_pf(game["away_team"],"away_rb_rec_yards"),
+        "high_wind":                  high_wind,
     }
 
 
@@ -292,7 +324,7 @@ def spread_to_win_prob(spread: float) -> float:
 
 # ── Run game predictions ──────────────────────────────────────────────────────
 def run_game_predictions() -> pd.DataFrame:
-    base, meta    = load_trained_model()
+    base, _       = load_trained_model()
     upcoming      = load_upcoming_games()
     inj_scores    = build_injury_scores()
     clutch_scores = build_clutch_scores()
@@ -301,24 +333,96 @@ def run_game_predictions() -> pd.DataFrame:
         print("  No upcoming games found.")
         return pd.DataFrame()
 
+    playoff_mode   = is_playoff_week(upcoming)
+    playoff_model  = None
+    playoff_scaler = None
+
+    if playoff_mode:
+        print("  Playoff week detected — loading playoff model...")
+        try:
+            from engine.playoff_model import load_playoff_model, predict_playoff_game
+            playoff_model, playoff_scaler = load_playoff_model()
+            ensure_playoff_table()
+            print("  Playoff model loaded.")
+        except FileNotFoundError:
+            print("  Playoff model not found — run engine/playoff_model.py to train.")
+            playoff_mode = False
+        except Exception as e:
+            print(f"  Playoff model failed ({e}) — using main model.")
+            playoff_mode = False
+    else:
+        print("  Regular season week.")
+
+    # ── Bootstrap confidence for live predictions ────────────────────────────
+    # Fit N_BOOTS models once on bootstrap samples, then score all games.
+    # Much faster than fitting per game — O(N_BOOTS) fits not O(N_BOOTS * N_games).
+    print("  Computing confidence scores (bootstrap)...")
+    boot_models = []
+    try:
+        from engine.model import load_training_data, _make_base
+        train_df = load_training_data()
+        rng      = np.random.default_rng(42)
+        N_BOOTS  = 25
+        for _ in range(N_BOOTS):
+            idx    = rng.integers(0, len(train_df), size=len(train_df))
+            sample = train_df.iloc[idx]
+            m      = _make_base()
+            m.fit(
+                sample[FEATURE_COLS].fillna(0),
+                sample["result"] - sample["vegas_spread"].fillna(0),
+            )
+            boot_models.append(m)
+        print(f"  {N_BOOTS} bootstrap models ready")
+    except Exception as e:
+        print(f"  Confidence unavailable: {e}")
+
+    def get_confidence(X_game: pd.DataFrame) -> float | None:
+        if not boot_models:
+            return None
+        preds = [float(m.predict(X_game)[0]) for m in boot_models]
+        return round(float(np.std(preds)), 3)
+
     rows = []
     for _, game in upcoming.iterrows():
         try:
-            features = build_game_features(game, inj_scores, clutch_scores)
-            X = pd.DataFrame([features])[FEATURE_COLS].fillna(0)
+            features     = build_game_features(game, inj_scores, clutch_scores)
+            X            = pd.DataFrame([features])[FEATURE_COLS].fillna(0)
 
-            base_pred = base.predict(X)[0]
-            meta_X    = np.array([[
-                base_pred,
-                game["vegas_spread"] if pd.notna(game["vegas_spread"]) else 0.0,
-                features["elo_diff"],
-            ]])
-            model_spread = float(meta.predict(meta_X)[0])
+            # ATS margin prediction + vegas = implied spread
+            vegas_spread = features["vegas_spread"]
+            ats_pred     = float(base.predict(X)[0])
+            model_spread = round(ats_pred + vegas_spread, 1)
 
-            vegas_spread     = float(game["vegas_spread"]) if pd.notna(game["vegas_spread"]) else None
-            spread_gap       = round(model_spread - vegas_spread, 1) if vegas_spread is not None else None
+            # Bootstrap confidence
+            confidence = get_confidence(X)
+
+            spread_gap       = round(model_spread - vegas_spread, 1) if vegas_spread else None
             home_win_prob    = spread_to_win_prob(model_spread)
             predicted_winner = game["home_team"] if model_spread > 0 else game["away_team"]
+
+            if playoff_mode and playoff_model is not None:
+                try:
+                    from engine.playoff_model import predict_playoff_game
+                    po_pred          = predict_playoff_game(features, playoff_model, playoff_scaler)
+                    home_win_prob    = po_pred["home_win_prob"]
+                    predicted_winner = game["home_team"] if po_pred["playoff_pick"] == "home" \
+                                       else game["away_team"]
+                    save_playoff_prediction(
+                        game["game_id"], int(game["season"]), int(game["week"]),
+                        game["home_team"], game["away_team"], po_pred, features
+                    )
+                    print(f"  {game['home_team']:4s} vs {game['away_team']:4s}  "
+                          f"playoff: {predicted_winner} ({home_win_prob:.0%})  "
+                          f"spread: {model_spread:+.1f}  vegas: {vegas_spread or '?'}")
+                except Exception as e:
+                    print(f"  {game['home_team']:4s} vs {game['away_team']:4s}  "
+                          f"playoff model failed ({e}), using main")
+            else:
+                edge_flag = " ★" if spread_gap and abs(spread_gap) >= 3.0 else ""
+                conf_label = f"  conf:{confidence:.2f}" if confidence is not None else ""
+                print(f"  {game['home_team']:4s} vs {game['away_team']:4s}  "
+                      f"model: {model_spread:+.1f}  vegas: {str(vegas_spread or '?'):>5}  "
+                      f"gap: {str(spread_gap or '?'):>4}{edge_flag}{conf_label}")
 
             rows.append({
                 "game_id":          game["game_id"],
@@ -328,17 +432,16 @@ def run_game_predictions() -> pd.DataFrame:
                 "gametime":         game["gametime"],
                 "home_team":        game["home_team"],
                 "away_team":        game["away_team"],
-                "model_spread":     round(model_spread, 1),
-                "vegas_spread":     vegas_spread,
+                "game_type":        game.get("game_type", "REG"),
+                "model_spread":     model_spread,
+                "vegas_spread":     vegas_spread if vegas_spread else None,
                 "spread_gap":       spread_gap,
                 "home_win_prob":    home_win_prob,
                 "away_win_prob":    round(1 - home_win_prob, 3),
                 "predicted_winner": predicted_winner,
+                "confidence":       confidence,
                 "generated_at":     datetime.now().isoformat(),
             })
-            print(f"  {game['home_team']:4s} vs {game['away_team']:4s}  "
-                  f"model: {model_spread:+.1f}  vegas: {vegas_spread or '?':>5}  "
-                  f"gap: {spread_gap or '?'}")
 
         except Exception as e:
             print(f"  Skipping {game['game_id']}: {e}")
@@ -350,43 +453,37 @@ def run_game_predictions() -> pd.DataFrame:
     return df
 
 
-# ── Run props predictions ─────────────────────────────────────────────────────
+# ── Props ─────────────────────────────────────────────────────────────────────
 def run_props_predictions() -> None:
     try:
-        qb_models = {t: load_qb_model(t) for t in ["passing_yards", "passing_tds", "attempts", "completions", "passing_interceptions"]}
+        qb_models = {t: load_qb_model(t) for t in ["passing_yards","passing_tds","attempts","completions","passing_interceptions"]}
         qb_preds  = predict_qb(qb_models)
         if not qb_preds.empty:
             save(qb_preds, "qb_prop_predictions")
             print(f"  QB props saved: {len(qb_preds)} rows")
-        else:
-            print("  QB props: no data")
     except Exception as e:
         print(f"  QB props failed: {e}")
 
     try:
-        rb_models = {t: load_rb_model(t) for t in ["rushing_yards", "rushing_tds", "carries", "receptions", "receiving_yards"]}
+        rb_models = {t: load_rb_model(t) for t in ["rushing_yards","rushing_tds","carries","receptions","receiving_yards"]}
         rb_preds  = predict_rb(rb_models)
         if not rb_preds.empty:
             save(rb_preds, "rb_prop_predictions")
             print(f"  RB props saved: {len(rb_preds)} rows")
-        else:
-            print("  RB props: no data")
     except Exception as e:
         print(f"  RB props failed: {e}")
 
     try:
-        wr_models = {t: load_wr_model(t) for t in ["receiving_yards", "receiving_tds", "receptions", "targets"]}
+        wr_models = {t: load_wr_model(t) for t in ["receiving_yards","receiving_tds","receptions","targets"]}
         wr_preds  = predict_wr(wr_models)
         if not wr_preds.empty:
             save(wr_preds, "wr_prop_predictions")
             print(f"  WR props saved: {len(wr_preds)} rows")
-        else:
-            print("  WR props: no data")
     except Exception as e:
         print(f"  WR props failed: {e}")
 
 
-# ── Main entry point (full pipeline) ─────────────────────────────────────────
+# ── Main pipeline ─────────────────────────────────────────────────────────────
 def run_predictions() -> pd.DataFrame:
     import nflreadpy as nfl
     from nflreadpy.utils_date import get_current_season
@@ -404,7 +501,7 @@ def run_predictions() -> pd.DataFrame:
     player_stats = player_stats[player_stats["position"].isin(SKILL_POSITIONS)]
     team_stats   = nfl.load_team_stats(seasons=[season], summary_level="week").to_pandas()
     rosters      = nfl.load_rosters([season]).to_pandas()
-    print(f"  {len(schedules)} games, {len(player_stats)} player rows, {len(rosters)} roster entries")
+    print(f"  {len(schedules)} games, {len(player_stats)} player rows")
 
     print("\n[2/8] Fetching injuries and depth charts...")
     try:
@@ -435,7 +532,7 @@ def run_predictions() -> pd.DataFrame:
             depth_charts.to_sql("depth_charts_current", conn, if_exists="replace", index=False)
     print("  Done")
 
-    print("\n[4/8] Merging completed games into historical tables...")
+    print("\n[4/8] Merging completed games...")
     n = merge_season_into_historical(schedules)
     print(f"  {n} new games merged")
 
@@ -447,16 +544,13 @@ def run_predictions() -> pd.DataFrame:
         existing_rolling = pd.read_sql("SELECT DISTINCT game_id FROM team_rolling_stats", conn)["game_id"].tolist()
         existing_player  = pd.read_sql("SELECT DISTINCT game_id FROM player_features",    conn)["game_id"].tolist()
 
-    new_rolling = [g for g in schedules["game_id"] if g not in existing_rolling]
-    new_player  = [g for g in schedules["game_id"] if g not in existing_player]
-
-    if new_rolling:
+    if [g for g in schedules["game_id"] if g not in existing_rolling]:
         save(build_rolling_stats(), "team_rolling_stats")
         print("  Rolling stats rebuilt")
     else:
         print("  Rolling stats up to date")
 
-    if new_player:
+    if [g for g in schedules["game_id"] if g not in existing_player]:
         save(build_player_features(), "player_features")
         print("  Player features rebuilt")
     else:
@@ -465,10 +559,11 @@ def run_predictions() -> pd.DataFrame:
     print("\n[6/8] Retraining spread model...")
     train_final_model(load_training_data())
 
-    print("\n[7/8] Rebuilding defense ratings (current season)...")
+    print("\n[7/8] Rebuilding defense ratings...")
+    from engine.defense import build_defense_ratings
     def_ratings = build_defense_ratings(seasons=[season])
     save(def_ratings, "defense_ratings")
-    print(f"  Defense ratings updated: {len(def_ratings):,} rows")
+    print(f"  {len(def_ratings):,} rows")
 
     print("\n[8/8] Running predictions...")
     print("  Game picks...")
@@ -485,6 +580,7 @@ if __name__ == "__main__":
         print(f"\n{'Home':<6} {'Away':<6} {'Model':>8} {'Vegas':>8} {'Gap':>6} {'Win%':>6}")
         print("-" * 44)
         for _, r in df.iterrows():
+            edge = " ★" if r["spread_gap"] and abs(r["spread_gap"]) >= 2.0 else ""
             print(f"{r['home_team']:<6} {r['away_team']:<6} "
                   f"{r['model_spread']:>+8.1f}  {str(r['vegas_spread'] or '?'):>7}  "
-                  f"{str(r['spread_gap'] or '?'):>5}  {r['home_win_prob']*100:>5.1f}%")
+                  f"{str(r['spread_gap'] or '?'):>5}  {r['home_win_prob']*100:>5.1f}%{edge}")
