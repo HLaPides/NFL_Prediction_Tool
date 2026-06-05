@@ -65,3 +65,5 @@ logs/
 
 # ── SBRO data files (large, not source code) ─────────────────────────────────
 *.htm
+
+release/
