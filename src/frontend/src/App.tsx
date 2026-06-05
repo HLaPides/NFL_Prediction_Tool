@@ -867,9 +867,9 @@ function StrategyTab() {
       <Section title="READING A GAME CARD" super="Spread model" accent="var(--blue-lt)">
         <Callout>Every card shows a pick — who the model thinks wins. The model and Vegas almost always agree on the winner. Where they differ is the margin: the model often projects a more extreme spread than Vegas. When that gap is large enough, it flags potential value.</Callout>
         <div style={{ display:'flex', gap:1, marginBottom:16 }}>
-          <StatBox label="MODEL ACCURACY"  value="66.2%"    color="var(--silver-lt)" />
-          <StatBox label="ATS WIN RATE"    value="54.8%"    color="var(--gold)" />
-          <StatBox label="BETS / SEASON"   value="~23"      color="var(--silver)" />
+          <StatBox label="MODEL ACCURACY"  value="66.4%"    color="var(--silver-lt)" />
+          <StatBox label="ATS WIN RATE"    value="58.7%"    color="var(--gold)" />
+          <StatBox label="BETS / SEASON"   value="~22"      color="var(--silver)" />
           <StatBox label="EDGE THRESHOLD"  value="±3.0 pts" color="var(--gold)" />
         </div>
         <div style={{ border:'1px solid var(--border)', marginBottom:16 }}>
