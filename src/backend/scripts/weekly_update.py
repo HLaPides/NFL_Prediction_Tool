@@ -1,3 +1,36 @@
+"""
+weekly_update.py — Full 9-step data pipeline. Run once per week during the season.
+
+Fetches all current NFL data from nflverse, merges completed games into
+historical tables, rebuilds derived features, retrains the spread model,
+and generates fresh predictions for upcoming games. This is the script
+the API refresh button calls — do not replace it with predictor.py alone.
+
+Steps:
+    1. Fetch schedules, player stats, team stats, rosters from nflverse
+    2. Fetch ESPN depth charts
+    3. Fetch injury report
+    4. Save all current-week data to *_current tables
+    5. Merge completed games into historical tables (schedules, team_stats, etc.)
+    6. Rebuild ELO history + rolling stats + player features for new games
+    7. Retrain the XGBoost spread model on all historical data
+    8. Rebuild defense ratings
+    9. Run predictions (spread picks + QB/RB/WR props) for upcoming games
+
+Usage:
+    python3.11 scripts/weekly_update.py
+
+Typically called automatically by api.py via the /refresh endpoint.
+Safe to run manually mid-week if data needs refreshing outside the normal
+Tuesday cadence. Rolling stats and player features are incremental —
+only new game_ids are rebuilt, so reruns are fast after the first pass.
+
+Writes to DB tables:
+    schedules_current, player_stats_current, team_stats_current,
+    rosters_current, depth_charts_current, injuries_current,
+    elo_history, team_rolling_stats, player_features,
+    defense_ratings, weekly_predictions, qb/rb/wr_prop_predictions
+"""
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -19,20 +52,25 @@ SKILL_POSITIONS = {"QB", "RB", "WR", "TE"}
 
 # ── Data fetchers ─────────────────────────────────────────────────────────────
 def get_schedules(season: int) -> pd.DataFrame:
+    """Load full season schedule from nflverse."""
     return nfl.load_schedules([season]).to_pandas()
 
 def get_player_stats(season: int) -> pd.DataFrame:
+    """Load regular season skill position player stats from nflverse."""
     df = nfl.load_player_stats([season]).to_pandas()
     df = df[df["season_type"] == "REG"]
     return df[df["position"].isin(SKILL_POSITIONS)]
 
 def get_team_stats(season: int) -> pd.DataFrame:
+    """Load weekly team-level stats from nflverse."""
     return nfl.load_team_stats(seasons=[season], summary_level="week").to_pandas()
 
 def get_rosters(season: int) -> pd.DataFrame:
+    """Load current season rosters from nflverse."""
     return nfl.load_rosters([season]).to_pandas()
 
 def get_depth_charts() -> pd.DataFrame:
+    """Fetch current depth charts from ESPN for all 32 teams."""
     df = get_all_depth_charts()
     if not df.empty:
         df["fetched_at"] = pd.Timestamp.now().isoformat()
@@ -41,6 +79,13 @@ def get_depth_charts() -> pd.DataFrame:
 
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 def run_weekly_update() -> pd.DataFrame:
+    """
+    Execute the full weekly pipeline and return upcoming games as a DataFrame.
+
+    Returns:
+        pd.DataFrame: Upcoming unplayed games with week, teams, date, and time.
+                      Empty DataFrame if no upcoming games found.
+    """
     season = get_current_season()
     print(f"\nWeekly update — {season} season")
     print("=" * 40)

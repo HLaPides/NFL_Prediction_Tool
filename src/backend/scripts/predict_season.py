@@ -1,3 +1,44 @@
+"""
+predict_season.py — Monte Carlo Super Bowl odds simulator.
+
+Runs N_SIMULATIONS full season simulations using current ELO ratings and the
+current season's schedule structure. Each simulation plays out all 272 regular
+season games with ELO-based win probabilities, updates standings, seeds the
+playoffs, and crowns a Super Bowl winner. Aggregated win counts across all
+simulations produce implied Super Bowl odds for every team.
+
+Preseason adjustments applied before simulating:
+    - QB EPA adjustment: shifts team ELO up/down based on starter EPA vs
+      league average. Better QB = higher ELO going in.
+    - Strength of schedule (SOS): minor ELO nudge based on average opponent
+      quality in the upcoming schedule.
+    - Injury penalties: reduces ELO for teams with confirmed starters (QB,
+      WR, TE, RB) listed as Out/Doubtful/IR. Penalty scales by position
+      importance and whether a healthy backup is available.
+
+ELO mechanics:
+    - Win probability: standard 400-point scale Elo formula with HOME_ADVANTAGE
+      baked in as a flat ELO bonus for the home team.
+    - K-factor: margin-of-victory adjusted (log scale, capped at 2.5x) so
+      blowouts move the needle more than squeakers.
+    - Playoffs: reduced home advantage (50%) for wild card/divisional/conference
+      games; neutral site for the Super Bowl.
+
+Usage:
+    python3.11 scripts/predict_season.py
+
+Config (top of file):
+    N_SIMULATIONS   — number of Monte Carlo runs (default 10,000)
+    SCHEDULE_SEASON — which season's schedule structure to use
+    HOME_ADVANTAGE  — flat ELO bonus for home team (default 48)
+    QB_EPA_ELO_SCALE — ELO points per unit of QB EPA above/below average
+    SOS_ELO_SCALE   — weight of SOS adjustment (default 0.15)
+    INJURY_ELO_IMPACT — ELO penalty per position (QB: 40, RB: 10, WR: 8, TE: 6)
+
+Output:
+    Ranked Super Bowl win probability and implied moneyline odds for all 32 teams,
+    plus AFC/NFC conference breakdown. No DB writes.
+"""
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -50,11 +91,24 @@ NFC_TEAMS = {"ARI","ATL","CAR","CHI","DAL","DET","GB","LA","MIN","NO","NYG","PHI
 
 # ── Core ELO helpers ──────────────────────────────────────────────────────────
 def win_prob(home_elo: float, away_elo: float) -> float:
+    """
+    Compute home team win probability using the standard Elo formula.
+    HOME_ADVANTAGE is pre-baked into home_elo by the caller.
+    """
     adjusted = home_elo + HOME_ADVANTAGE
     return 1.0 / (1 + math.pow(10, (away_elo - adjusted) / 400))
 
 
 def simulate_game(home_elo: float, away_elo: float, k: float = 20.0) -> tuple:
+    """
+    Simulate a single game outcome and return updated ELO ratings.
+
+    K-factor is adjusted by estimated margin of victory (log scale, capped
+    at 2.5x) so blowouts shift ELO more than close games.
+
+    Returns:
+        tuple: ("home" | "away", new_home_elo, new_away_elo)
+    """
     prob_home    = win_prob(home_elo, away_elo)
     home_wins    = random.random() < prob_home
     elo_diff     = home_elo + HOME_ADVANTAGE - away_elo
@@ -71,16 +125,35 @@ def simulate_game(home_elo: float, away_elo: float, k: float = 20.0) -> tuple:
 
 
 def get_conference(team: str) -> str:
+    """Return 'AFC' or 'NFC' for a team abbreviation."""
     return "AFC" if team in AFC_TEAMS else "NFC"
 
 
 def seed_teams(standings: dict, conference: str) -> list:
+    """
+    Return the top 7 seeds for a conference, sorted by wins then ELO.
+    Seeding is simplified — no division title tiebreakers.
+    """
     conf_teams = [(t, s) for t, s in standings.items() if get_conference(t) == conference]
     conf_teams.sort(key=lambda x: (x[1]["wins"], x[1]["elo"]), reverse=True)
     return [t for t, _ in conf_teams[:7]]
 
 
 def simulate_playoffs(seeds_afc: list, seeds_nfc: list, elos: dict) -> str:
+    """
+    Simulate the full playoff bracket and return the Super Bowl winner.
+
+    Wild card and divisional/conference games use reduced home advantage
+    (50% of HOME_ADVANTAGE). Super Bowl is neutral site.
+
+    Args:
+        seeds_afc: AFC seeds 1-7 in order
+        seeds_nfc: NFC seeds 1-7 in order
+        elos: current ELO ratings after regular season
+
+    Returns:
+        str: team abbreviation of the Super Bowl winner
+    """
     def playoff_game(home: str, away: str) -> str:
         prob = win_prob(elos[home] + HOME_ADVANTAGE * 0.5, elos[away])
         return home if random.random() < prob else away
@@ -106,7 +179,13 @@ def simulate_playoffs(seeds_afc: list, seeds_nfc: list, elos: dict) -> str:
 
 # ── Adjustments ───────────────────────────────────────────────────────────────
 def apply_qb_epa_adjustment(starting_elos: dict) -> dict:
-    """Adjust ELO based on last season QB EPA relative to league average."""
+    """
+    Adjust starting ELO ratings based on QB EPA from the prior season.
+
+    Teams with above-average QB EPA get a positive ELO bump; below-average
+    get a penalty. Scale controlled by QB_EPA_ELO_SCALE (default: 20 ELO
+    points per unit of EPA above/below league average).
+    """
     try:
         with get_connection() as conn:
             qb_epa = pd.read_sql("""
@@ -140,7 +219,13 @@ def apply_qb_epa_adjustment(starting_elos: dict) -> dict:
 
 
 def apply_sos_adjustment(starting_elos: dict, schedule: pd.DataFrame) -> dict:
-    """Adjust ELO based on average opponent strength in the schedule."""
+    """
+    Apply a small ELO adjustment based on strength of schedule.
+
+    Teams facing above-average opponents get a slight bump (they've been
+    battle-tested); teams with weak schedules get a slight penalty. Effect
+    is minor — SOS_ELO_SCALE defaults to 0.15.
+    """
     if schedule.empty:
         return starting_elos
 
@@ -166,11 +251,16 @@ def apply_sos_adjustment(starting_elos: dict, schedule: pd.DataFrame) -> dict:
 
 def build_injury_penalties() -> dict:
     """
-    Cross-reference depth_charts_current with injuries_current.
-    Returns { team_abbr: total_elo_penalty }.
-    Starter out + backup available = 50% penalty.
-    Starter out + no backup        = 100% penalty.
-    Starter questionable           = 25% penalty.
+    Cross-reference depth_charts_current with injuries_current to build
+    ELO penalties for teams with confirmed starter absences.
+
+    Penalty tiers per position:
+        Starter out, backup healthy  → 50% of base penalty
+        Starter out, no healthy backup → 100% of base penalty
+        Starter questionable         → 25% of base penalty
+
+    Returns:
+        dict: { team_abbr: total_elo_penalty } — only teams with penalties included.
     """
     try:
         with get_connection() as conn:
@@ -240,6 +330,7 @@ def build_injury_penalties() -> dict:
 
 
 def apply_injury_penalties(starting_elos: dict, penalties: dict) -> dict:
+    """Subtract injury ELO penalties from starting ratings."""
     adjusted = dict(starting_elos)
     for team, penalty in penalties.items():
         if team in adjusted:
@@ -249,6 +340,19 @@ def apply_injury_penalties(starting_elos: dict, penalties: dict) -> dict:
 
 # ── Main simulation ───────────────────────────────────────────────────────────
 def simulate_season(schedule: pd.DataFrame, starting_elos: dict) -> str:
+    """
+    Simulate one full season (regular season + playoffs) and return the winner.
+
+    ELO ratings update after every regular season game. Final ratings feed
+    into playoff seeding and probability calculations.
+
+    Args:
+        schedule: Regular season games with home_team, away_team, week columns.
+        starting_elos: Pre-adjusted ELO ratings for all 32 teams.
+
+    Returns:
+        str: Team abbreviation of the Super Bowl champion.
+    """
     elos      = dict(starting_elos)
     standings = {team: {"wins": 0, "losses": 0, "elo": elos.get(team, 1500)}
                  for team in elos}

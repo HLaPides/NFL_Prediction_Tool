@@ -134,7 +134,6 @@ def _apply_playoff_model(records: list) -> list:
             from engine.playoff_model import load_playoff_model, predict_playoff_game, PLAYOFF_FEATURES
             model, scaler = load_playoff_model()
 
-            # Try to get features from SQL (best effort fallback)
             miss_ids     = [r["game_id"] for r in missing]
             placeholders = ",".join("?" * len(miss_ids))
             with get_connection() as conn:
@@ -171,7 +170,6 @@ def _apply_playoff_model(records: list) -> list:
                 features = feat_map.get(r["game_id"], {})
                 pred     = predict_playoff_game(features, model, scaler)
                 pick     = r["home_team"] if pred["playoff_pick"] == "home" else r["away_team"]
-                # Store as a mock row
                 stored_map[r["game_id"]] = {
                     "home_win_prob":      pred["home_win_prob"],
                     "away_win_prob":      pred["away_win_prob"],
@@ -316,11 +314,11 @@ def _run_pipeline():
     python      = sys.executable
     try:
         result = subprocess.run(
-            [python, str(backend_dir / "engine" / "predictor.py")],
+            [python, str(backend_dir / "scripts" / "weekly_update.py")],
             capture_output=True, text=True, cwd=str(backend_dir)
         )
         if result.returncode != 0:
-            raise RuntimeError(f"predictor failed:\n{result.stderr}")
+            raise RuntimeError(f"weekly_update failed:\n{result.stderr}")
         pipeline_status["last_result"] = "success"
     except Exception as e:
         pipeline_status["last_result"] = f"error: {str(e)}"

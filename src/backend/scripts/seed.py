@@ -1,3 +1,37 @@
+"""
+seed.py — Build team_rolling_stats and player_features from scratch.
+
+Run this once when setting up a new environment, or if either table gets
+corrupted and needs a full rebuild. Both tables are critical — the spread
+model cannot load training data without them.
+
+During normal weekly operation, weekly_update.py handles incremental updates
+to these tables automatically. Only run seed.py manually when you need a
+complete rebuild from historical data.
+
+Functions:
+    build_rolling_stats()   → team_rolling_stats table
+        4-game rolling averages of team-level offensive/defensive stats,
+        plus streak, margin trend, blowout rate, and coach win rate.
+        One row per (game_id, team) — both home and away team per game.
+
+    build_player_features() → player_features table
+        Per-game starter stats for QB, WR, TE, RB going into each game,
+        injury-adjusted (starter replaced by backup if confirmed out/doubtful).
+        One row per game_id covering both home and away skill positions.
+
+Usage:
+    python3.11 scripts/seed.py              # rebuilds both tables (default)
+    python3.11 scripts/seed.py --rolling    # rolling stats only
+    python3.11 scripts/seed.py --players    # player features only
+    python3.11 scripts/seed.py --all        # explicit both
+
+Runtime: ~10-15 minutes for player features (iterates every game since 2001).
+         Rolling stats are faster (~2-3 minutes).
+
+Writes to DB tables:
+    team_rolling_stats, player_features
+"""
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -15,6 +49,20 @@ UNLIKELY_STATUSES = {"Out", "Doubtful"}
 # ══════════════════════════════════════════════════════════════════════════════
 
 def build_rolling_stats() -> pd.DataFrame:
+    """
+    Build 4-game rolling team stats for every game in the historical DB.
+
+    For each team and game, looks back at the previous ROLLING_WEEKS games
+    (strictly before the current game, no leakage) and computes averages
+    for passing/rushing EPA, yards, turnovers, defensive stats, and penalty
+    yards. Also computes win/loss streak, margin trend, blowout rates, and
+    rolling coach win rate.
+
+    Returns:
+        pd.DataFrame: One row per (game_id, team) with all roll_* columns.
+                      Rows with no prior games contain only game_id and team
+                      (all stats null) so the merge in model.py still works.
+    """
     with get_connection() as conn:
         stats = pd.read_sql("""
             SELECT
@@ -137,6 +185,7 @@ def build_rolling_stats() -> pd.DataFrame:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _load_player_stats() -> pd.DataFrame:
+    """Load all historical regular season skill position stats from DB."""
     with get_connection() as conn:
         return pd.read_sql("""
             SELECT player_id, player_name, position, team, season, week, game_id,
@@ -151,6 +200,7 @@ def _load_player_stats() -> pd.DataFrame:
 
 
 def _load_injuries() -> pd.DataFrame:
+    """Load historical Out/Doubtful injury designations from DB."""
     with get_connection() as conn:
         return pd.read_sql("""
             SELECT season, week, team, gsis_id, position, report_status
@@ -162,6 +212,10 @@ def _load_injuries() -> pd.DataFrame:
 
 def _get_injured_ids(injuries: pd.DataFrame, team: str,
                      season: int, week: int) -> set:
+    """
+    Return the set of player gsis_ids confirmed out/doubtful for a given
+    team, season, and week.
+    """
     mask = (
         (injuries["team"]   == team) &
         (injuries["season"] == season) &
@@ -172,7 +226,16 @@ def _get_injured_ids(injuries: pd.DataFrame, team: str,
 
 def _rolling_starter(df: pd.DataFrame, activity_col: str,
                      injured: set) -> tuple:
-    """Returns (starter_id, healthy_df) for a position group."""
+    """
+    Identify the likely starter going into a game based on recent activity.
+
+    Filters out injured players first; falls back to full group if all are
+    injured. Starter is the player with the highest activity_col total over
+    the last ROLLING_WEEKS games.
+
+    Returns:
+        tuple: (starter_player_id, healthy_subset_df)
+    """
     healthy = df[~df["player_id"].isin(injured)]
     use     = healthy if not healthy.empty else df
     if use.empty:
@@ -184,6 +247,23 @@ def _rolling_starter(df: pd.DataFrame, activity_col: str,
 
 
 def build_player_features() -> pd.DataFrame:
+    """
+    Build injury-adjusted starter features for every completed game.
+
+    For each game, looks back ROLLING_WEEKS games to identify the likely
+    starter at QB, WR, TE, and RB for both home and away teams. If a
+    starter is confirmed out or doubtful, their backup's stats are used
+    instead. Also flags whether the original starter was injured.
+
+    Features per position per side (home_/away_ prefix):
+        QB:  qb_epa (EPA per attempt), qb_games, qb_injured
+        WR:  wr_yards, wr_target_share, wr_injured
+        TE:  te_yards, te_target_share, te_injured
+        RB:  rb_rush_yards, rb_rec_yards, rb_carry_share, rb_injured
+
+    Returns:
+        pd.DataFrame: One row per game_id with all home_/away_ feature columns.
+    """
     print("  Loading player stats...")
     df = _load_player_stats()
 
