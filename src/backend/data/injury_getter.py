@@ -1,3 +1,24 @@
+"""
+injury_getter.py — Fetch current NFL injury report from the ESPN API.
+
+Pulls the live injury report for all 32 teams and returns a flat DataFrame
+saved to the injuries_current table. Called by weekly_update.py each week.
+
+The ESPN injuries API returns all players with an injury designation —
+Out, Doubtful, Questionable, IR, PUP, Suspended, Probable. The resulting
+table is used by:
+    - predictor.py (build_injury_scores): compute weighted injury severity
+      per team for the current week's game predictions
+    - predict_season.py (build_injury_penalties): apply ELO penalties to
+      teams with confirmed starter absences in the Super Bowl simulator
+
+Usage:
+    python3.11 data/injury_getter.py   # fetch, save to DB, print summary
+
+    From code:
+        from data.injury_getter import fetch_injuries
+        injuries = fetch_injuries()    # returns DataFrame, does NOT save to DB
+"""
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -13,6 +34,24 @@ UNCERTAIN_STATUSES = {"Questionable"}
 
 
 def fetch_injuries() -> pd.DataFrame:
+    """
+    Fetch the current NFL injury report from the ESPN API.
+
+    Returns one row per injured player with their team (display name format,
+    e.g. 'Kansas City Chiefs'), position, injury status, and short comment.
+
+    The team_display column uses full team names — callers are responsible
+    for mapping to abbreviations via TEAM_DISPLAY_NAMES if needed (see
+    predictor.py and predict_season.py for the mapping dict).
+
+    Returns:
+        pd.DataFrame: Columns: team_display, player_name, position,
+                      status, comment, date.
+                      Empty DataFrame if the API returns no injury data.
+
+    Raises:
+        requests.HTTPError: On non-200 API response.
+    """
     resp = requests.get(ESPN_INJURIES_URL, timeout=10)
     resp.raise_for_status()
     data = resp.json()
@@ -33,24 +72,6 @@ def fetch_injuries() -> pd.DataFrame:
             })
 
     return pd.DataFrame(rows)
-
-
-def get_team_injury_flags(injuries: pd.DataFrame, team_display: str) -> dict:
-    team_inj = injuries[injuries["team_display"] == team_display]
-    return {
-        "has_out":              any(team_inj["status"].isin(UNLIKELY_STATUSES)),
-        "has_questionable":     any(team_inj["status"].isin(UNCERTAIN_STATUSES)),
-        "out_players":          team_inj[team_inj["status"].isin(UNLIKELY_STATUSES)]["player_name"].tolist(),
-        "questionable_players": team_inj[team_inj["status"].isin(UNCERTAIN_STATUSES)]["player_name"].tolist(),
-    }
-
-
-def get_qb_status(injuries: pd.DataFrame, qb_name: str) -> str:
-    last_name = qb_name.split(".")[-1].strip() if "." in qb_name else qb_name
-    match = injuries[injuries["player_name"].str.contains(last_name, case=False, na=False)]
-    if match.empty:
-        return "Active"
-    return match.iloc[0]["status"]
 
 
 if __name__ == "__main__":

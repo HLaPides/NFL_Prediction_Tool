@@ -1,3 +1,22 @@
+"""
+depth_chart_getter.py — Fetch current NFL depth charts from the ESPN API.
+
+Hits the ESPN site API for each of the 32 NFL teams and returns skill position
+depth chart data (QB, RB, WR, TE only). Called by weekly_update.py each week
+to refresh depth_charts_current, which feeds into injury penalty calculations
+in predict_season.py and predictor.py.
+
+The ESPN depth chart API is unofficial but stable — same endpoint used by
+ESPN's own fantasy tools. No auth required. Rate-limited by team loop so
+failures on individual teams don't block the rest.
+
+Usage:
+    python3.11 data/depth_chart_getter.py   # fetch all 32 teams, print summary
+
+    From code:
+        from data.depth_chart_getter import get_all_depth_charts
+        df = get_all_depth_charts()   # returns full depth chart DataFrame
+"""
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -22,6 +41,21 @@ SKILL_POSITIONS = {"QB", "RB", "WR", "TE"}
 
 
 def get_depth_chart(team_abbr: str) -> pd.DataFrame:
+    """
+    Fetch the full depth chart for a single team from the ESPN API.
+
+    Args:
+        team_abbr: NFL team abbreviation (must be a key in TEAM_ID_MAP).
+
+    Returns:
+        pd.DataFrame: Columns: team, position, depth_order, player_id, player_name.
+                      Only skill positions (QB/RB/WR/TE) are included.
+                      Empty DataFrame if the team has no depth chart data.
+
+    Raises:
+        ValueError: If team_abbr is not in TEAM_ID_MAP.
+        requests.HTTPError: On non-200 API response.
+    """
     team_id = TEAM_ID_MAP.get(team_abbr)
     if team_id is None:
         raise ValueError(f"Unknown team: {team_abbr}")
@@ -48,12 +82,18 @@ def get_depth_chart(team_abbr: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def get_starters(team_abbr: str) -> pd.DataFrame:
-    df = get_depth_chart(team_abbr)
-    return df[df["depth_order"] == 1].reset_index(drop=True) if not df.empty else df
-
-
 def get_all_depth_charts() -> pd.DataFrame:
+    """
+    Fetch depth charts for all 32 NFL teams and concatenate into one DataFrame.
+
+    Failures on individual teams are caught and logged — a single team's API
+    error won't abort the full fetch. Teams that fail return no rows.
+
+    Returns:
+        pd.DataFrame: Full depth chart across all teams with columns:
+                      team, position, depth_order, player_id, player_name.
+                      Empty DataFrame only if all 32 teams fail.
+    """
     frames = []
     for team_abbr in TEAM_ID_MAP:
         try:
@@ -66,10 +106,6 @@ def get_all_depth_charts() -> pd.DataFrame:
         except Exception as e:
             print(f"  {team_abbr} — failed: {e}")
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-
-
-def get_week_starters(home_team: str, away_team: str) -> dict:
-    return {"home": get_starters(home_team), "away": get_starters(away_team)}
 
 
 if __name__ == "__main__":

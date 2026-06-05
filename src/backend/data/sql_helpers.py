@@ -1,3 +1,33 @@
+"""
+sql_helpers.py — SQLite connection, read, and write helpers for jaginator.db.
+
+All DB access goes through get_connection(). The DB lives at data/jaginator.db
+relative to this file. The context manager (with get_connection() as conn)
+uses sqlite3's built-in transaction handling: commits on clean exit, rolls
+back on exception.
+
+DB tables fall into three categories:
+
+    Historical (append-only, built once, extended weekly):
+        schedules, game_odds, game_conditions, game_personnel,
+        team_stats, player_stats, injuries_historical, elo_history,
+        team_rolling_stats, player_features, defense_ratings
+
+    Current (replaced wholesale each week):
+        schedules_current, player_stats_current, team_stats_current,
+        rosters_current, depth_charts_current, injuries_current
+
+    Predictions (written each week by predictor.py):
+        weekly_predictions, model_predictions, playoff_predictions,
+        qb_prop_predictions, rb_prop_predictions, wr_prop_predictions
+
+Setup:
+    First time or after DB loss:
+        python3.11 -c "from data.sql_helpers import seed_database; seed_database()"
+    Then run seed.py to build rolling stats and player features.
+    Then run elo_analyzer.py to build ELO history.
+    Then run defense.py to build defense ratings.
+"""
 import sqlite3
 import pandas as pd
 from pathlib import Path
@@ -6,6 +36,7 @@ DB_PATH = Path(__file__).resolve().parent / "jaginator.db"
 
 DEAD_FRANCHISES = {"OAK", "SD", "STL"}
 
+# Column subsets for splitting the raw nflverse schedule into normalized tables
 SCHEDULE_COLS = [
     "game_id", "season", "game_type", "week", "gameday", "weekday",
     "gametime", "away_team", "home_team", "away_score", "home_score",
@@ -27,18 +58,47 @@ PERSONNEL_COLS = [
 
 # ── Connection ────────────────────────────────────────────────────────────────
 def get_connection() -> sqlite3.Connection:
+    """
+    Return a sqlite3 connection to jaginator.db.
+
+    Creates the data directory if it doesn't exist. Use as a context manager:
+        with get_connection() as conn:
+            df = pd.read_sql("SELECT ...", conn)
+    sqlite3 connections commit on clean exit and rollback on exception.
+    """
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     return sqlite3.connect(DB_PATH)
 
 
 # ── Write ─────────────────────────────────────────────────────────────────────
 def save(df: pd.DataFrame, table: str, if_exists: str = "replace") -> None:
+    """
+    Write a DataFrame to a DB table, replacing it by default.
+
+    Args:
+        df: DataFrame to write.
+        table: Target table name.
+        if_exists: 'replace' (default) or 'append'.
+    """
     with get_connection() as conn:
         df.to_sql(table, conn, if_exists=if_exists, index=False)
 
 
 def merge_season_into_historical(schedules_current: pd.DataFrame) -> int:
-    """Appends completed games from the current schedule into historical tables."""
+    """
+    Append newly completed games from the current schedule into historical tables.
+
+    Filters schedules_current to games with both scores present, then checks
+    which game_ids don't already exist in the schedules table. New games are
+    split into the four normalized historical tables.
+
+    Args:
+        schedules_current: Full current season schedule from nflverse
+                           (including both completed and upcoming games).
+
+    Returns:
+        int: Number of new games added. 0 if all games already exist.
+    """
     completed = schedules_current.dropna(subset=["home_score", "away_score"])
 
     with get_connection() as conn:
@@ -60,7 +120,18 @@ def merge_season_into_historical(schedules_current: pd.DataFrame) -> int:
 
 # ── Seed ──────────────────────────────────────────────────────────────────────
 def seed_database() -> None:
-    """Seeds the DB from scratch. Only run if the DB is lost or corrupted."""
+    """
+    Seed jaginator.db from scratch using historical nflverse data.
+
+    Only run this if the DB is lost or corrupted. After seeding, you still
+    need to run:
+        python3.11 scripts/seed.py          # builds team_rolling_stats, player_features
+        python3.11 engine/elo_analyzer.py   # builds elo_history
+        python3.11 engine/defense.py        # builds defense_ratings
+
+    This function only seeds the base schedule tables (schedules, game_odds,
+    game_conditions, game_personnel, team_stats).
+    """
     from data.getter import get_all_historical
     print(f"Seeding jaginator.db at {DB_PATH}")
     data = get_all_historical()
@@ -75,55 +146,23 @@ def seed_database() -> None:
 
 # ── Read ──────────────────────────────────────────────────────────────────────
 def load_schedules(min_season: int = 1999) -> pd.DataFrame:
+    """Load all historical schedules from min_season onward, ordered by season/week."""
     with get_connection() as conn:
         return pd.read_sql(
             "SELECT * FROM schedules WHERE season >= ? ORDER BY season, week",
             conn, params=(min_season,)
         )
 
-def load_team_stats(min_season: int = 1999) -> pd.DataFrame:
-    with get_connection() as conn:
-        return pd.read_sql(
-            "SELECT * FROM team_stats WHERE season >= ? ORDER BY season",
-            conn, params=(min_season,)
-        )
-
-def load_game_odds(min_season: int = 1999) -> pd.DataFrame:
-    with get_connection() as conn:
-        return pd.read_sql("""
-            SELECT o.* FROM game_odds o
-            JOIN schedules s ON o.game_id = s.game_id
-            WHERE s.season >= ?
-        """, conn, params=(min_season,))
-
-def load_game_conditions(min_season: int = 1999) -> pd.DataFrame:
-    with get_connection() as conn:
-        return pd.read_sql("""
-            SELECT c.* FROM game_conditions c
-            JOIN schedules s ON c.game_id = s.game_id
-            WHERE s.season >= ?
-        """, conn, params=(min_season,))
-
-def load_game_personnel(min_season: int = 1999) -> pd.DataFrame:
-    with get_connection() as conn:
-        return pd.read_sql("""
-            SELECT p.* FROM game_personnel p
-            JOIN schedules s ON p.game_id = s.game_id
-            WHERE s.season >= ?
-        """, conn, params=(min_season,))
-
-def load_team_games(team: str) -> pd.DataFrame:
-    with get_connection() as conn:
-        return pd.read_sql(
-            "SELECT * FROM schedules WHERE home_team = ? OR away_team = ? ORDER BY season, week",
-            conn, params=(team, team)
-        )
-
-def load_elo_history() -> pd.DataFrame:
-    with get_connection() as conn:
-        return pd.read_sql("SELECT * FROM elo_history ORDER BY season, week", conn)
 
 def load_current_elo_ratings() -> dict:
+    """
+    Return each active team's most recent ELO rating as a dict.
+
+    Excludes dead franchises (OAK, SD, STL — superseded by LV, LAC, LA).
+
+    Returns:
+        dict: { team_abbr: elo_rating_float }
+    """
     with get_connection() as conn:
         df = pd.read_sql("""
             SELECT h.team, h.elo_after
@@ -137,14 +176,21 @@ def load_current_elo_ratings() -> dict:
     return dict(zip(df[~df["team"].isin(DEAD_FRANCHISES)]["team"],
                     df[~df["team"].isin(DEAD_FRANCHISES)]["elo_after"]))
 
-def load_depth_charts(starters_only: bool = True) -> pd.DataFrame:
-    with get_connection() as conn:
-        query = "SELECT * FROM depth_charts_current"
-        if starters_only:
-            query += " WHERE depth_order = 1"
-        return pd.read_sql(query + " ORDER BY team, position, depth_order", conn)
 
 def load_upcoming_games(schedules_current: pd.DataFrame) -> pd.DataFrame:
+    """
+    Return this week's unplayed games from the current schedule.
+
+    Filters to rows where home_score is null, then returns only the
+    earliest week (next week's games, not the full remaining schedule).
+
+    Args:
+        schedules_current: Full current season schedule DataFrame.
+
+    Returns:
+        pd.DataFrame: Upcoming games for the nearest unplayed week.
+                      Empty DataFrame if all games have been played.
+    """
     upcoming = schedules_current[schedules_current["home_score"].isna()]
     if upcoming.empty:
         return upcoming
@@ -153,11 +199,14 @@ def load_upcoming_games(schedules_current: pd.DataFrame) -> pd.DataFrame:
 
 # ── Utility ───────────────────────────────────────────────────────────────────
 def list_tables() -> list:
+    """Return a list of all table names in jaginator.db."""
     with get_connection() as conn:
         rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
     return [r[0] for r in rows]
 
+
 def table_info(table: str) -> None:
+    """Print column names and types for a given table."""
     with get_connection() as conn:
         cols = conn.execute(f"PRAGMA table_info({table})").fetchall()
     print(f"\n{table} — {len(cols)} columns:")
