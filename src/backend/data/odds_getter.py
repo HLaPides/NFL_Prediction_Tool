@@ -37,7 +37,7 @@ from dotenv import load_dotenv
 from data.sql_helpers import get_connection
 
 # Load .env from backend root
-load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 ODDS_API_URL = "https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds"
