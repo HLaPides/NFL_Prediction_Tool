@@ -66,7 +66,7 @@ Jaginator/
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/HLaPides/Jaginator.git
+git clone https://github.com/HLaPides/NFL_Prediction_Tool.git
 cd Jaginator
 
 # Backend
