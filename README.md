@@ -1,4 +1,4 @@
-# Jaginator
+# NFL Prediction Tool
 
 NFL spread prediction and player prop model. Desktop app built on XGBoost, logistic regression, and ELO ratings — trained on 25 seasons of play-by-play data.
 
