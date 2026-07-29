@@ -119,7 +119,7 @@ npm run build
 
 ## Weekly cadence
 
-Each Tuesday during the season, hit the refresh button in the app (or run manually):
+Hitting refresh button or run weekly_update.py
 
 ```bash
 python3.11 scripts/weekly_update.py
@@ -143,13 +143,6 @@ This runs the full 9-step pipeline:
 ### Spread model (`engine/model.py`)
 Pure XGBoost trained on **ATS margin** (`result - vegas_spread`) as the target. Vegas spread is included as a peer feature — not a stacking anchor. The model learns market inefficiency directly.
 
-**Key finding — asymmetric edge filter:**
-Underdog bets are profitable across all gap sizes. Favorite bets are only profitable when the model's edge is small (gap ≤ 3.0, spread ≤ 7). The model overcorrects on large-gap heavy favorites.
-
-```
-Underdog bets: 251 bets, 60.6% ATS, +$3,918
-Favorite bets (filtered): 195 bets, 55.4% ATS, +$1,500
-```
 
 **Params (Optuna-tuned, confirmed ceiling):**
 ```python
@@ -169,7 +162,7 @@ Conference: 77.3%  Super Bowl: 68.2%
 ```
 
 ### ELO (`engine/elo_analyzer.py`)
-Standard 400-point scale with margin-of-victory K-factor adjustment and 30% regression to mean each offseason. Home advantage: +48 ELO points.
+Uses ELO system to rank theams
 
 ### Defense ratings (`engine/defense.py`)
 Opponent-adjusted defensive EPA (DVOA-style). Separate ratings for pass defense, rush defense, and position-specific coverage (WR, TE, RB targets). Used by both the spread model and the props models.
@@ -209,16 +202,3 @@ python3.11 scripts/predict_season.py
 ```
 
 ---
-
-## What doesn't work
-
-Things tested extensively that produced no improvement over the baseline:
-
-- Stacking sub-models (QB-only, defense-only, ELO-only) — Ridge meta-layer negatively weighted the main model
-- Recency weighting on rolling stats — equal weighting is optimal
-- Season weighting, split-season models, rolling window sweep — all flat
-- LightGBM / CatBoost / ensemble — flat or worse
-- Underdog-specific model — no additional signal beyond the main model
-- Feature interactions, QB-adjusted ELO — flat
-
-The asymmetric favorite/underdog filter was the single biggest improvement (+$2,036 ROI vs unfiltered).
