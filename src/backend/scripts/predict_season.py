@@ -193,7 +193,7 @@ def apply_qb_epa_adjustment(starting_elos: dict) -> dict:
                 FROM player_stats
                 WHERE position = 'QB'
                   AND season_type = 'REG'
-                  AND season = ?
+                  AND season = %s
                   AND attempts >= 10
                 GROUP BY team
             """, conn, params=(SCHEDULE_SEASON,))
@@ -395,7 +395,7 @@ if __name__ == "__main__":
         reg_only = pd.read_sql("""
             SELECT game_id, season, week, home_team, away_team, game_type
             FROM schedules
-            WHERE season = ? AND game_type = 'REG'
+            WHERE season = %s AND game_type = 'REG'
             ORDER BY week
         """, conn, params=(SCHEDULE_SEASON,))
     print(f"  {len(reg_only)} regular season games")

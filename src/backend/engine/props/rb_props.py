@@ -87,8 +87,8 @@ def load_rb_data() -> pd.DataFrame:
             FROM player_stats p
             WHERE p.position = 'RB'
               AND p.season_type = 'REG'
-              AND p.carries >= ?
-              AND p.season >= ?
+              AND p.carries >= %s
+              AND p.season >= %s
             ORDER BY p.season, p.week
         """, conn, params=(MIN_CARRIES, MIN_SEASON))
 
@@ -292,7 +292,7 @@ def predict_current_week(models: dict) -> pd.DataFrame:
             FROM player_stats_current
             WHERE position = 'RB'
               AND season_type = 'REG'
-              AND carries >= ?
+              AND carries >= %s
             ORDER BY week
         """, conn, params=(MIN_CARRIES,))
 

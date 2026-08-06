@@ -203,10 +203,10 @@ def update_odds_in_db(live_odds: pd.DataFrame) -> int:
     updated = 0
     with get_connection() as conn:
         for _, row in merged.iterrows():
-            conn.execute("""
+            conn.exec_driver_sql("""
                 UPDATE game_odds
-                SET spread_line = ?
-                WHERE game_id = ?
+                SET spread_line = %s
+                WHERE game_id = %s
             """, (row["spread_line"], row["game_id"]))
             updated += 1
         conn.commit()

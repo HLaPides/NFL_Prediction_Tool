@@ -91,8 +91,8 @@ def load_wr_data() -> pd.DataFrame:
             FROM player_stats p
             WHERE p.position = 'WR'
               AND p.season_type = 'REG'
-              AND p.targets >= ?
-              AND p.season >= ?
+              AND p.targets >= %s
+              AND p.season >= %s
             ORDER BY p.season, p.week
         """, conn, params=(MIN_TARGETS, MIN_SEASON))
 
@@ -299,7 +299,7 @@ def predict_current_week(models: dict) -> pd.DataFrame:
             FROM player_stats_current
             WHERE position = 'WR'
               AND season_type = 'REG'
-              AND targets >= ?
+              AND targets >= %s
             ORDER BY week
         """, conn, params=(MIN_TARGETS,))
 

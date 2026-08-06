@@ -92,8 +92,8 @@ def load_qb_data() -> pd.DataFrame:
             FROM player_stats p
             WHERE p.position = 'QB'
               AND p.season_type = 'REG'
-              AND p.attempts >= ?
-              AND p.season >= ?
+              AND p.attempts >= %s
+              AND p.season >= %s
             ORDER BY p.season, p.week
         """, conn, params=(MIN_ATTEMPTS, MIN_SEASON))
 
@@ -305,7 +305,7 @@ def predict_current_week(models: dict) -> pd.DataFrame:
             FROM player_stats_current
             WHERE position = 'QB'
               AND season_type = 'REG'
-              AND attempts >= ?
+              AND attempts >= %s
             ORDER BY week
         """, conn, params=(MIN_ATTEMPTS,))
 

@@ -100,7 +100,7 @@ def is_playoff_week(upcoming: pd.DataFrame) -> bool:
     try:
         with get_connection() as conn:
             game_ids     = upcoming["game_id"].tolist()
-            placeholders = ",".join("?" * len(game_ids))
+            placeholders = ",".join(["%s"] * len(game_ids))
             types = pd.read_sql(f"""
                 SELECT game_type FROM schedules_current
                 WHERE game_id IN ({placeholders})
@@ -115,7 +115,7 @@ def is_playoff_week(upcoming: pd.DataFrame) -> bool:
 def ensure_playoff_table():
     """Create playoff_predictions table if it doesn't exist."""
     with get_connection() as conn:
-        conn.execute("""
+        conn.exec_driver_sql("""
             CREATE TABLE IF NOT EXISTS playoff_predictions (
                 game_id            TEXT PRIMARY KEY,
                 season             INTEGER,
@@ -137,12 +137,22 @@ def save_playoff_prediction(game_id, season, week, home_team, away_team, pred, f
     ensure_playoff_table()
     pick = home_team if pred["playoff_pick"] == "home" else away_team
     with get_connection() as conn:
-        conn.execute("""
-            INSERT OR REPLACE INTO playoff_predictions
+        conn.exec_driver_sql("""
+            INSERT INTO playoff_predictions
             (game_id, season, week, home_team, away_team,
              home_win_prob, away_win_prob, playoff_pick,
              playoff_confidence, features_json)
-            VALUES (?,?,?,?,?,?,?,?,?,?)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (game_id) DO UPDATE SET
+                season              = EXCLUDED.season,
+                week                = EXCLUDED.week,
+                home_team           = EXCLUDED.home_team,
+                away_team           = EXCLUDED.away_team,
+                home_win_prob       = EXCLUDED.home_win_prob,
+                away_win_prob       = EXCLUDED.away_win_prob,
+                playoff_pick        = EXCLUDED.playoff_pick,
+                playoff_confidence  = EXCLUDED.playoff_confidence,
+                features_json       = EXCLUDED.features_json
         """, (
             game_id, season, week, home_team, away_team,
             pred["home_win_prob"], pred["away_win_prob"],
@@ -303,7 +313,7 @@ def build_game_features(game: pd.Series,
             SELECT tr.*, s.season, s.week
             FROM team_rolling_stats tr
             JOIN schedules s ON s.game_id = tr.game_id
-            WHERE tr.team IN (?, ?)
+            WHERE tr.team IN (%s, %s)
             ORDER BY s.season DESC, s.week DESC
         """, conn, params=(game["home_team"], game["away_team"]))
 
@@ -315,13 +325,13 @@ def build_game_features(game: pd.Series,
         pf = pd.read_sql("""
             SELECT pf.* FROM player_features pf
             JOIN schedules s ON s.game_id = pf.game_id
-            WHERE s.home_team IN (?,?) OR s.away_team IN (?,?)
+            WHERE s.home_team IN (%s,%s) OR s.away_team IN (%s,%s)
             ORDER BY s.season DESC, s.week DESC LIMIT 20
         """, conn, params=(game["home_team"], game["away_team"],
                            game["home_team"], game["away_team"]))
 
         cond = pd.read_sql("""
-            SELECT roof, wind FROM game_conditions WHERE game_id = ?
+            SELECT roof, wind FROM game_conditions WHERE game_id = %s
         """, conn, params=(game["game_id"],))
 
         def_ratings = pd.read_sql("""
@@ -331,7 +341,7 @@ def build_game_features(game: pd.Series,
                 FROM defense_ratings GROUP BY team
             ) latest ON dr.team = latest.team
               AND (dr.season * 100 + dr.week) = latest.max_key
-            WHERE dr.team IN (?, ?)
+            WHERE dr.team IN (%s, %s)
         """, conn, params=(game["home_team"], game["away_team"]))
 
     home_elo = elo_map.get(game["home_team"], 1500)

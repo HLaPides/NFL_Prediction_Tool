@@ -130,10 +130,11 @@ def run_weekly_update() -> pd.DataFrame:
     n = merge_season_into_historical(schedules)
     print(f"  {n} new games merged")
 
-    print("\n[7/10] Rebuilding ELO + features...")
+    print("\n[7/10] Updating ELO + features...")
     elo = elo_analyzer()
-    ratings, _ = elo.build_history()
-    print(f"  ELO rebuilt for {len(ratings)} teams")
+    ratings, new_elo_rows = elo.build_incremental()
+    print(f"  ELO updated for {new_elo_rows['game_id'].nunique() if not new_elo_rows.empty else 0} "
+          f"new game(s), {len(ratings)} teams tracked")
 
     with get_connection() as conn:
         existing_rolling = pd.read_sql(
