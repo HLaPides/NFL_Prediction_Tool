@@ -96,7 +96,7 @@ def _apply_playoff_model(records: list) -> list:
     # Get game types from schedules
     try:
         game_ids     = [r["game_id"] for r in records]
-        placeholders = ",".join("?" * len(game_ids))
+        placeholders = ",".join(["%s"] * len(game_ids))
         with get_connection() as conn:
             game_types = pd.read_sql(
                 f"SELECT game_id, game_type FROM schedules "
@@ -117,7 +117,7 @@ def _apply_playoff_model(records: list) -> list:
     # Load stored playoff predictions
     try:
         po_ids       = [r["game_id"] for r in playoff_records]
-        placeholders = ",".join("?" * len(po_ids))
+        placeholders = ",".join(["%s"] * len(po_ids))
         with get_connection() as conn:
             stored = pd.read_sql(
                 f"SELECT * FROM playoff_predictions WHERE game_id IN ({placeholders})",
@@ -135,7 +135,7 @@ def _apply_playoff_model(records: list) -> list:
             model, scaler = load_playoff_model()
 
             miss_ids     = [r["game_id"] for r in missing]
-            placeholders = ",".join("?" * len(miss_ids))
+            placeholders = ",".join(["%s"] * len(miss_ids))
             with get_connection() as conn:
                 feat_df = pd.read_sql(f"""
                     SELECT
@@ -217,7 +217,7 @@ def get_historical(season: Optional[int] = None, week: Optional[int] = None):
         SELECT game_id, season, week, home_team, away_team, result,
                vegas_spread, model_spread, spread_gap, confidence,
                model_winner, vegas_winner, actual_winner
-        FROM model_predictions WHERE season = ? AND week = ? ORDER BY week
+        FROM model_predictions WHERE season = %s AND week = %s ORDER BY week
     """, (season, week))
 
     records = _apply_playoff_model(records)

@@ -1,7 +1,7 @@
 """
 model.py — XGBoost spread model: training, backtesting, and edge calculation.
 
-Architecture (final, locked):
+Architecture:
     Pure XGBoost trained on ATS margin (result - vegas_spread) as the target.
     Vegas spread is included as a peer feature (not a stacking anchor).
     Output is ATS margin prediction; convert back to spread by adding vegas_spread.
@@ -87,7 +87,7 @@ def build_injury_features() -> pd.DataFrame:
         inj = pd.read_sql("""
             SELECT season, week, team, position, report_status, full_name
             FROM injuries_historical
-            WHERE season >= ?
+            WHERE season >= %s
               AND position IN ('QB','WR','RB','TE','T','G','C','CB','S','LB','DE','DT')
         """, conn, params=(INJURY_MIN_SEASON,))
 
@@ -95,7 +95,7 @@ def build_injury_features() -> pd.DataFrame:
             SELECT game_id, season, week, home_team, away_team
             FROM schedules
             WHERE game_type IN ('REG','WC','DIV','CON','SB')
-              AND season >= ?
+              AND season >= %s
         """, conn, params=(INJURY_MIN_SEASON,))
 
     inj["pos_weight"] = inj["position"].map(POSITION_WEIGHTS).fillna(0.5)
@@ -278,7 +278,7 @@ def load_training_data() -> pd.DataFrame:
             LEFT JOIN defense_ratings ad ON ad.game_id = s.game_id AND ad.team = s.away_team
             WHERE s.game_type IN ('REG', 'WC', 'DIV', 'CON', 'SB')
               AND s.result IS NOT NULL
-              AND s.season >= ?
+              AND s.season >= %s
             ORDER BY s.season, s.week
         """, conn, params=(MIN_SEASON,))
 

@@ -26,7 +26,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import math
 import pandas as pd
-from data.sql_helpers import load_schedules, save
+from data.sql_helpers import load_schedules, load_current_elo_ratings, save, get_connection
 
 # Teams that relocated — new team inherits predecessor's ELO
 RELOCATIONS = {
@@ -180,6 +180,96 @@ class elo_analyzer:
             self.ratings.pop(old_team, None)
 
         return self.ratings, history_df
+
+    def build_incremental(self, new_games: pd.DataFrame = None) -> tuple[dict, pd.DataFrame]:
+        """
+        Extend ELO history with only newly completed games, instead of
+        replaying every game since 1999.
+
+        Resumes from each team's current elo_after (already stored in
+        elo_history), so the only games processed are the ones not yet in
+        the table. Season reversion is applied at most once per call, the
+        moment a game's season differs from the last season already present
+        in elo_history — matching what build_history() would have done had
+        it processed these games in the same run.
+
+        Appends to elo_history (does not replace it). Safe to call weekly
+        with the full current-season schedule; already-processed game_ids
+        are skipped automatically.
+
+        Args:
+            new_games: Games to consider adding. If None, loads all schedules
+                       and diffs against elo_history's existing game_ids.
+                       Must include home_score/away_score for completed games;
+                       rows missing scores are dropped.
+
+        Returns:
+            tuple: (current_ratings dict, new_rows_df DataFrame — only the
+                    rows appended this call, empty if nothing new)
+        """
+        with get_connection() as conn:
+            existing_ids = pd.read_sql(
+                "SELECT DISTINCT game_id FROM elo_history", conn
+            )["game_id"].tolist()
+            last_season_row = pd.read_sql(
+                "SELECT MAX(season) AS s FROM elo_history", conn
+            )
+        last_processed_season = last_season_row["s"].iloc[0]  # None if table is empty
+
+        if new_games is None:
+            new_games = load_schedules()
+            new_games = new_games[new_games["game_type"].isin(["REG", "WC", "DIV", "CON", "SB"])]
+
+        new_games = new_games.dropna(subset=["home_score", "away_score"])
+        new_games = new_games[~new_games["game_id"].isin(existing_ids)]
+        new_games = new_games.sort_values(["season", "week"]).reset_index(drop=True)
+
+        if new_games.empty:
+            return load_current_elo_ratings(), pd.DataFrame()
+
+        # Resume from each team's last known rating instead of starting at 1500.
+        self.ratings   = load_current_elo_ratings()
+        history: list[dict] = []
+        current_season = last_processed_season
+
+        for _, game in new_games.iterrows():
+            home   = game["home_team"]
+            away   = game["away_team"]
+            season = game["season"]
+
+            self._init_team(home)
+            self._init_team(away)
+
+            if current_season is not None and season != current_season:
+                self.apply_season_reversion()
+            current_season = season
+
+            elo_home_before = self.ratings[home]
+            elo_away_before = self.ratings[away]
+
+            new_home, new_away = self.update_ratings(
+                self.ratings[home], self.ratings[away],
+                int(game["home_score"]), int(game["away_score"])
+            )
+            self.ratings[home] = new_home
+            self.ratings[away] = new_away
+
+            history.append({"game_id": game["game_id"], "season": season,
+                             "week": game["week"], "team": home, "opponent": away,
+                             "elo_before": round(elo_home_before, 1), "elo_after": round(new_home, 1)})
+            history.append({"game_id": game["game_id"], "season": season,
+                             "week": game["week"], "team": away, "opponent": home,
+                             "elo_before": round(elo_away_before, 1), "elo_after": round(new_away, 1)})
+
+        new_rows_df = pd.DataFrame(history)
+        save(new_rows_df, "elo_history", if_exists="append")
+        print(f"Appended {len(new_rows_df)} rows to elo_history "
+              f"({len(new_games)} new games).")
+
+        for old_team in RELOCATIONS.values():
+            self.ratings.pop(old_team, None)
+
+        return self.ratings, new_rows_df
 
     def predict(self, home_team: str, away_team: str) -> dict:
         """

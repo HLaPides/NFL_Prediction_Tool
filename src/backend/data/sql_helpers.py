@@ -1,10 +1,15 @@
 """
-sql_helpers.py — SQLite connection, read, and write helpers for jaginator.db.
+sql_helpers.py — Postgres connection, read, and write helpers for the
+Jaginator database.
 
-All DB access goes through get_connection(). The DB lives at data/jaginator.db
-relative to this file. The context manager (with get_connection() as conn)
-uses sqlite3's built-in transaction handling: commits on clean exit, rolls
-back on exception.
+All DB access goes through get_connection(). Connection details come from
+the DATABASE_URL environment variable (see src/backend/.env), e.g.:
+
+    DATABASE_URL=postgresql+psycopg2://user:password@host:5432/jaginator
+
+The context manager (with get_connection() as conn) wraps a single
+transaction via SQLAlchemy's engine.begin(): commits on clean exit, rolls
+back on exception — matching the behavior this module had under SQLite.
 
 DB tables fall into three categories:
 
@@ -13,7 +18,7 @@ DB tables fall into three categories:
         team_stats, player_stats, injuries_historical, elo_history,
         team_rolling_stats, player_features, defense_ratings
 
-    Current (replaced wholesale each week):
+    Current (replaced wholesale each week — see NOTE below):
         schedules_current, player_stats_current, team_stats_current,
         rosters_current, depth_charts_current, injuries_current
 
@@ -21,18 +26,44 @@ DB tables fall into three categories:
         weekly_predictions, model_predictions, playoff_predictions,
         qb_prop_predictions, rb_prop_predictions, wr_prop_predictions
 
+NOTE — "current" tables and foreign keys:
+    The *_current tables are dropped and recreated wholesale every week
+    (save(..., if_exists="replace")). Postgres enforces foreign keys, and a
+    DROP TABLE fails if anything still references it. Because of this, the
+    Postgres schema (data/postgres_schema.sql) intentionally does NOT put
+    foreign keys on any *_current table, and nothing references them. If a
+    future migration needs an FK pointing at a *_current table, switch that
+    table's refresh to TRUNCATE + INSERT instead of DROP + CREATE.
+
 Setup:
-    First time or after DB loss:
+    1. Create the Postgres database and run data/postgres_schema.sql against it.
+    2. Set DATABASE_URL in src/backend/.env.
+    3. First time or after DB loss:
         python3.11 -c "from data.sql_helpers import seed_database; seed_database()"
-    Then run seed.py to build rolling stats and player features.
-    Then run elo_analyzer.py to build ELO history.
-    Then run defense.py to build defense ratings.
+    4. Run seed.py to build rolling stats and player features.
+    5. Run elo_analyzer.py to build ELO history.
+    6. Run defense.py to build defense ratings.
 """
-import sqlite3
-import pandas as pd
+import os
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent / "jaginator.db"
+import pandas as pd
+from dotenv import load_dotenv
+from sqlalchemy import create_engine
+from sqlalchemy.engine import Connection
+
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL not set. Add it to src/backend/.env, e.g.\n"
+        "  DATABASE_URL=postgresql+psycopg2://user:password@host:5432/jaginator"
+    )
+
+# One engine per process; engine.connect()/engine.begin() checks out a
+# pooled connection per call, so this is safe to share across threads.
+_engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
 DEAD_FRANCHISES = {"OAK", "SD", "STL"}
 
@@ -57,17 +88,23 @@ PERSONNEL_COLS = [
 
 
 # ── Connection ────────────────────────────────────────────────────────────────
-def get_connection() -> sqlite3.Connection:
+def get_connection() -> Connection:
     """
-    Return a sqlite3 connection to jaginator.db.
+    Return a SQLAlchemy Connection bound to the Postgres database, wrapped
+    in engine.begin() so it behaves like the original sqlite3 pattern:
 
-    Creates the data directory if it doesn't exist. Use as a context manager:
         with get_connection() as conn:
             df = pd.read_sql("SELECT ...", conn)
-    sqlite3 connections commit on clean exit and rollback on exception.
+
+    Commits on clean exit, rolls back on exception. Every existing
+    pd.read_sql/to_sql call site works unchanged. Raw (non-pandas) queries
+    elsewhere in the codebase use conn.exec_driver_sql(sql, params) instead
+    of conn.execute(sql, params) — SQLAlchemy 2.0's Connection.execute()
+    requires a text()-wrapped Executable, not a plain string; exec_driver_sql
+    sends the string straight to psycopg2 using %s-style placeholders, same
+    as this codebase already uses throughout.
     """
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    return sqlite3.connect(DB_PATH)
+    return _engine.begin()
 
 
 # ── Write ─────────────────────────────────────────────────────────────────────
@@ -79,6 +116,10 @@ def save(df: pd.DataFrame, table: str, if_exists: str = "replace") -> None:
         df: DataFrame to write.
         table: Target table name.
         if_exists: 'replace' (default) or 'append'.
+
+    NOTE: 'replace' issues DROP TABLE + CREATE TABLE under Postgres, which
+    will fail if another table has a foreign key referencing this one. See
+    the *_current table note in this module's docstring.
     """
     with get_connection() as conn:
         df.to_sql(table, conn, if_exists=if_exists, index=False)
@@ -121,7 +162,10 @@ def merge_season_into_historical(schedules_current: pd.DataFrame) -> int:
 # ── Seed ──────────────────────────────────────────────────────────────────────
 def seed_database() -> None:
     """
-    Seed jaginator.db from scratch using historical nflverse data.
+    Seed the Postgres database from scratch using historical nflverse data.
+
+    Run data/postgres_schema.sql against the target database FIRST — this
+    function only inserts rows, it does not create tables.
 
     Only run this if the DB is lost or corrupted. After seeding, you still
     need to run:
@@ -133,14 +177,14 @@ def seed_database() -> None:
     game_conditions, game_personnel, team_stats).
     """
     from data.getter import get_all_historical
-    print(f"Seeding jaginator.db at {DB_PATH}")
+    print(f"Seeding Postgres database at {_engine.url.render_as_string(hide_password=True)}")
     data = get_all_historical()
     raw  = data["schedules"]
-    save(raw[[c for c in SCHEDULE_COLS   if c in raw.columns]], "schedules")
-    save(raw[[c for c in ODDS_COLS       if c in raw.columns]], "game_odds")
-    save(raw[[c for c in CONDITIONS_COLS if c in raw.columns]], "game_conditions")
-    save(raw[[c for c in PERSONNEL_COLS  if c in raw.columns]], "game_personnel")
-    save(data["team_stats"], "team_stats")
+    save(raw[[c for c in SCHEDULE_COLS   if c in raw.columns]], "schedules", if_exists="append")
+    save(raw[[c for c in ODDS_COLS       if c in raw.columns]], "game_odds", if_exists="append")
+    save(raw[[c for c in CONDITIONS_COLS if c in raw.columns]], "game_conditions", if_exists="append")
+    save(raw[[c for c in PERSONNEL_COLS  if c in raw.columns]], "game_personnel", if_exists="append")
+    save(data["team_stats"], "team_stats", if_exists="append")
     print("Database seeded.")
 
 
@@ -149,7 +193,7 @@ def load_schedules(min_season: int = 1999) -> pd.DataFrame:
     """Load all historical schedules from min_season onward, ordered by season/week."""
     with get_connection() as conn:
         return pd.read_sql(
-            "SELECT * FROM schedules WHERE season >= ? ORDER BY season, week",
+            "SELECT * FROM schedules WHERE season >= %s ORDER BY season, week",
             conn, params=(min_season,)
         )
 
@@ -199,16 +243,24 @@ def load_upcoming_games(schedules_current: pd.DataFrame) -> pd.DataFrame:
 
 # ── Utility ───────────────────────────────────────────────────────────────────
 def list_tables() -> list:
-    """Return a list of all table names in jaginator.db."""
+    """Return a list of all table names in the public schema."""
     with get_connection() as conn:
-        rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        rows = conn.exec_driver_sql(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'public' ORDER BY table_name"
+        ).fetchall()
     return [r[0] for r in rows]
 
 
 def table_info(table: str) -> None:
     """Print column names and types for a given table."""
     with get_connection() as conn:
-        cols = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        cols = conn.exec_driver_sql(
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = %s "
+            "ORDER BY ordinal_position",
+            (table,)
+        ).fetchall()
     print(f"\n{table} — {len(cols)} columns:")
     for col in cols:
-        print(f"  {col[1]:30s} {col[2]}")
+        print(f"  {col[0]:30s} {col[1]}")
