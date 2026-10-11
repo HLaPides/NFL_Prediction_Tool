@@ -162,7 +162,7 @@ Conference: 77.3%  Super Bowl: 68.2%
 ```
 
 ### ELO (`engine/elo_analyzer.py`)
-Uses ELO system to rank theams
+Uses ELO system to rank the teams
 
 ### Defense ratings (`engine/defense.py`)
 Opponent-adjusted defensive EPA (DVOA-style). Separate ratings for pass defense, rush defense, and position-specific coverage (WR, TE, RB targets). Used by both the spread model and the props models.
